@@ -1,0 +1,16 @@
+{
+	"compatibility_date": "2025-10-08",
+	"main": "src/index.ts",
+	"name": "hermes",
+	"upload_source_maps": true,
+	"observability": {
+		"enabled": true
+	},
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "hermes-db",
+			"database_id": "07e903fb-13eb-4ef6-a3ea-1b255c33bb83"
+		}
+	]
+}
