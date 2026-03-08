@@ -1,0 +1,38 @@
+name = "hermes"
+main = "src/index.ts"
+compatibility_date = "2025-03-01"
+compatibility_flags = ["nodejs_compat"]
+
+[observability]
+enabled = true
+
+# ── Bindings ────────────────────────────────────────────────────────────────
+[[d1_databases]]
+binding = "DB"
+database_name = "hermes-db"
+database_id = "07e903fb-13eb-4ef6-a3ea-1b255c33bb83"   # wrangler d1 create hermes-db
+
+[[r2_buckets]]
+binding = "VAULT"
+bucket_name = "vault"                       # wrangler r2 bucket create vault
+
+[ai]
+binding = "AI"
+
+# ── Durable Objects ──────────────────────────────────────────────────────────
+[durable_objects]
+bindings = [{ name = "CHAT_DO", class_name = "ChatDO" }]
+
+[[migrations]]
+tag = "v1"
+new_classes = ["ChatDO"]
+
+# ── Secrets (set with wrangler secret put) ───────────────────────────────────
+# API_SECRET   — shared bearer token for all endpoints
+#
+# Setup steps:
+#   1. wrangler d1 create hermes-db
+#   2. wrangler d1 execute hermes-db --file schema.sql
+#   3. wrangler r2 bucket create vault
+#   4. wrangler secret put API_SECRET
+#   5. wrangler deploy
