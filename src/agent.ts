@@ -22,9 +22,56 @@ function normalizePath(path: string): string {
   return path.trim().endsWith('.md') ? path.trim() : `${path.trim()}.md`;
 }
 
+
+// ── Web search result type ────────────────────────────────────────────────────
+
+interface WebSearchResult {
+  title:   string;
+  url:     string;
+  snippet: string;
+}
+
 // ── Tool definitions ──────────────────────────────────────────────────────────
 
 const FUNCTION_DECLARATIONS = [
+    {
+    name: 'webSearch',
+    description:
+      'Search the web via DuckDuckGo for current information, news, facts, or anything not in the vault. Returns a list of results with titles, URLs, and snippets. Follow up with fetchPage on the most relevant URL to get the full content.',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        reasoning: {
+          type: 'STRING',
+          description: 'One sentence explaining why a web search is needed.',
+        },
+        query: {
+          type: 'STRING',
+          description: 'The search query to send to DuckDuckGo.',
+        },
+      },
+      required: ['reasoning', 'query'],
+    },
+  },
+  {
+    name: 'fetchPage',
+    description:
+      'Fetch and read the full text content of a web page by URL. Use this after webSearch to read the full content of a promising result. Returns cleaned plain text, truncated to ~4000 characters.',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        reasoning: {
+          type: 'STRING',
+          description: 'One sentence explaining why this page is worth reading.',
+        },
+        url: {
+          type: 'STRING',
+          description: 'The full URL of the page to fetch.',
+        },
+      },
+      required: ['reasoning', 'url'],
+    },
+  },
   {
     name: 'searchVault',
     description:
@@ -191,6 +238,9 @@ function buildSystemPrompt(activeNote: string): string {
 - When asked to append to a note: call appendToNote directly — no need to readNote first
 - Preserve all existing content unless the user explicitly asks you to remove something
 - deleteNote is irreversible — only call it when the user's intent is unambiguous
+- Use webSearch when the user asks about current events, recent news, external facts, or anything not in the vault
+- After webSearch, call fetchPage on the most relevant result URL to get the full article or page content before answering
+- Always cite your web sources with a Markdown link: [Page Title](https://url)
 - **Do NOT add a Markdown heading (e.g. \`# Title\`) at the top of note content.** Obsidian uses the filename as the note title — adding a heading creates an ugly duplicate. Start note content directly with the body text or frontmatter.`;
 
   if (!activeNote?.trim()) return base;
@@ -492,6 +542,129 @@ async function executeDeleteNote(
   }
 }
 
+// ── Tool: webSearch ───────────────────────────────────────────────────────────
+
+async function executeWebSearch(query: string): Promise<WebSearchResult[]> {
+  try {
+    const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
+      redirect: 'follow',
+    });
+
+    if (!res.ok) {
+      console.error(`[webSearch] DDG returned ${res.status}`);
+      return [];
+    }
+
+    const html = await res.text();
+    const results: WebSearchResult[] = [];
+
+    // DDG HTML structure:
+    //   <a class="result__a" href="...">Title</a>
+    //   <a class="result__snippet">Snippet text</a>
+    //
+    // We extract using regex — no DOM available in Workers.
+    const blockRe = /<div class="result[^"]*"[\s\S]*?(?=<div class="result[^"]*"|$)/g;
+    const blocks  = html.match(blockRe) ?? [];
+
+    for (const block of blocks) {
+      if (results.length >= 8) break;
+
+      // Extract URL from the uddg= redirect param (DDG wraps all links)
+      const hrefMatch = block.match(/href="([^"]+)"/);
+      if (!hrefMatch) continue;
+      let url = hrefMatch[1];
+
+      // Decode DDG redirect: //duckduckgo.com/l/?uddg=<encoded-url>
+      const uddgMatch = url.match(/[?&]uddg=([^&"]+)/);
+      if (uddgMatch) {
+        try { url = decodeURIComponent(uddgMatch[1]); } catch { continue; }
+      }
+      // Skip DDG-internal links
+      if (!url.startsWith('http')) continue;
+
+      // Extract title (text inside result__a)
+      const titleMatch = block.match(/class="result__a"[^>]*>([\s\S]*?)<\/a>/);
+      const title = titleMatch
+        ? titleMatch[1].replace(/<[^>]+>/g, '').trim()
+        : url;
+
+      // Extract snippet
+      const snippetMatch = block.match(/class="result__snippet"[^>]*>([\s\S]*?)<\/a>/);
+      const snippet = snippetMatch
+        ? snippetMatch[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim()
+        : '';
+
+      if (title && url) {
+        results.push({ title, url, snippet });
+      }
+    }
+
+    console.log(`[webSearch] "${query}" → ${results.length} results`);
+    return results;
+  } catch (err) {
+    console.error('[webSearch] Error:', err);
+    return [];
+  }
+}
+
+// ── Tool: fetchPage ───────────────────────────────────────────────────────────
+
+const FETCH_PAGE_MAX_CHARS = 4000;
+
+async function executeFetchPage(url: string): Promise<{ url: string; content: string } | { error: string }> {
+  try {
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept':          'text/html,application/xhtml+xml',
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
+      redirect: 'follow',
+    });
+
+    if (!res.ok) return { error: `HTTP ${res.status} fetching ${url}` };
+
+    const contentType = res.headers.get('content-type') ?? '';
+    if (!contentType.includes('text/html') && !contentType.includes('text/plain')) {
+      return { error: `Unsupported content type: ${contentType}` };
+    }
+
+    const html = await res.text();
+
+    // Strip scripts, styles, and tags; collapse whitespace
+    const text = html
+      .replace(/<script[\s\S]*?<\/script>/gi, '')
+      .replace(/<style[\s\S]*?<\/style>/gi, '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+
+    const truncated = text.length > FETCH_PAGE_MAX_CHARS
+      ? text.slice(0, FETCH_PAGE_MAX_CHARS) + '\n\n[… content truncated]'
+      : text;
+
+    console.log(`[fetchPage] ${url} → ${truncated.length} chars`);
+    return { url, content: truncated };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[fetchPage] Error fetching "${url}":`, msg);
+    return { error: msg };
+  }
+}
+
 // ── WebSocket helper ──────────────────────────────────────────────────────────
 
 function wsSend(ws: WebSocket, payload: WsOutgoing): void {
@@ -509,6 +682,8 @@ function toolLabel(name: string, args: Record<string, unknown>): string {
     case 'editNote':     return `Editing "${args?.path}"…`;
     case 'appendToNote': return `Appending to "${args?.path}"…`;
     case 'deleteNote':   return `Deleting "${args?.path}"…`;
+    case 'webSearch':  return `Searching the web for "${args?.query}"…`;
+    case 'fetchPage':  return `Reading ${args?.url}…`;
     default:             return `Using ${name}…`;
   }
 }
@@ -694,6 +869,20 @@ export async function runAgentTurn(
         wsSend(ws, { type: 'toolResult', name, args, results: [] });
         if (resultData.success) wsSend(ws, { type: 'syncRequired' });
 
+      }else if (name === 'webSearch') {
+        const webResults = await executeWebSearch(args?.query ?? '');
+        // Map to SearchResult shape so the client pill renders the URL list
+        const results: SearchResult[] = webResults.map((r) => ({
+          filename: r.title,
+          score:    1,
+          link:     r.url,
+          excerpt:  r.snippet,
+        }));
+        wsSend(ws, { type: 'toolResult', name, args, results });
+        resultData = { results: webResults };      
+      } else if (name === 'fetchPage') {
+        resultData = await executeFetchPage(args?.url ?? '');
+        wsSend(ws, { type: 'toolResult', name, args, results: [] });
       } else {
         resultData = { error: `Unknown function: ${name}` };
       }
