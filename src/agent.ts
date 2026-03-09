@@ -4,7 +4,23 @@ import type { Env, StoredMessage, SearchResult, WsOutgoing } from './types';
 
 const GEMINI_MODEL = 'gemini-2.5-flash';
 const GEMINI_BASE  = 'https://generativelanguage.googleapis.com/v1beta/models';
-const MAX_ROUNDS   = 4;
+const MAX_ROUNDS   = 8;
+
+// ── SHA-256 helper ────────────────────────────────────────────────────────────
+
+async function sha256Hex(content: string): Promise<string> {
+  const encoded = new TextEncoder().encode(content);
+  const hashBuf = await crypto.subtle.digest('SHA-256', encoded);
+  return Array.from(new Uint8Array(hashBuf))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+// ── Normalize path ────────────────────────────────────────────────────────────
+
+function normalizePath(path: string): string {
+  return path.trim().endsWith('.md') ? path.trim() : `${path.trim()}.md`;
+}
 
 // ── Tool definitions ──────────────────────────────────────────────────────────
 
@@ -12,14 +28,13 @@ const FUNCTION_DECLARATIONS = [
   {
     name: 'searchVault',
     description:
-      'Semantic search over the personal Obsidian knowledge vault. Returns the most relevant notes with excerpts.',
+      'Semantic search over the Obsidian vault. Returns the most relevant notes with excerpts. Use before readNote or editNote when you need to find which note to work with.',
     parameters: {
       type: 'OBJECT',
       properties: {
         reasoning: {
           type: 'STRING',
-          description:
-            'Required. One sentence explaining why searching the vault is necessary — what context is missing from the conversation.',
+          description: 'One sentence explaining why searching is needed.',
         },
         query: {
           type: 'STRING',
@@ -27,6 +42,133 @@ const FUNCTION_DECLARATIONS = [
         },
       },
       required: ['reasoning', 'query'],
+    },
+  },
+  {
+    name: 'listNotes',
+    description:
+      'List all notes in a folder, or all notes in the entire vault if no folder is given. Returns file paths and last-modified timestamps. Use this to explore vault structure.',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        reasoning: {
+          type: 'STRING',
+          description: 'One sentence explaining why you need to list notes.',
+        },
+        folder: {
+          type: 'STRING',
+          description:
+            'Optional. Vault-relative folder path, e.g. "Journal" or "Projects/Active". Omit to list the entire vault.',
+        },
+      },
+      required: ['reasoning'],
+    },
+  },
+  {
+    name: 'readNote',
+    description:
+      'Read the full Markdown content of a single note by its exact vault-relative path. Always call this before editNote so you have the current content.',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        reasoning: {
+          type: 'STRING',
+          description: 'One sentence explaining why the full note content is needed.',
+        },
+        path: {
+          type: 'STRING',
+          description: 'Vault-relative path, e.g. "Journal/2025-03-08.md". The .md extension is optional.',
+        },
+      },
+      required: ['reasoning', 'path'],
+    },
+  },
+  {
+    name: 'createNote',
+    description:
+      'Create a brand-new Markdown note. Fails if a note already exists at that path — use editNote to update an existing one.',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        reasoning: {
+          type: 'STRING',
+          description: 'One sentence explaining why this note is being created.',
+        },
+        path: {
+          type: 'STRING',
+          description: 'Vault-relative path for the new note, e.g. "Projects/My New Idea.md".',
+        },
+        content: {
+          type: 'STRING',
+          description: 'Full Markdown content of the new note.',
+        },
+      },
+      required: ['reasoning', 'path', 'content'],
+    },
+  },
+  {
+    name: 'editNote',
+    description:
+      'Replace the entire content of an existing note. Always call readNote first. Fails if the note does not exist — use createNote instead.',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        reasoning: {
+          type: 'STRING',
+          description: 'One sentence explaining what change is being made and why.',
+        },
+        path: {
+          type: 'STRING',
+          description: 'Vault-relative path of the note to update.',
+        },
+        content: {
+          type: 'STRING',
+          description: 'The complete new Markdown content that will replace the existing note.',
+        },
+      },
+      required: ['reasoning', 'path', 'content'],
+    },
+  },
+  {
+    name: 'appendToNote',
+    description:
+      'Append text to the end of an existing note without replacing any existing content. Good for journals, logs, and daily notes. Fails if the note does not exist.',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        reasoning: {
+          type: 'STRING',
+          description: 'One sentence explaining what is being appended and why.',
+        },
+        path: {
+          type: 'STRING',
+          description: 'Vault-relative path of the note to append to.',
+        },
+        content: {
+          type: 'STRING',
+          description: 'Markdown text to append. A blank line separator will be added automatically.',
+        },
+      },
+      required: ['reasoning', 'path', 'content'],
+    },
+  },
+  {
+    name: 'deleteNote',
+    description:
+      'Permanently delete a note from the vault. Writes a tombstone so the deletion propagates to all synced devices. Irreversible — only call when intent is unambiguous.',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        reasoning: {
+          type: 'STRING',
+          description: 'One sentence explaining why this note should be deleted.',
+        },
+        path: {
+          type: 'STRING',
+          description: 'Vault-relative path of the note to delete.',
+        },
+      },
+      required: ['reasoning', 'path'],
     },
   },
 ];
@@ -41,7 +183,15 @@ function buildSystemPrompt(activeNote: string): string {
 - When referencing vault notes always link them as [[Note Title]] (no .md extension)
 - External URLs as standard Markdown links: [label](https://url)
 - Be concise and direct — cut filler, preserve substance
-- NEVER output raw JSON or function call schemas`;
+- NEVER output raw JSON or function call schemas
+
+## Tool usage guidelines
+- When asked to edit a note: always call readNote first, then editNote with the full updated content
+- When asked to create a note: call createNote directly
+- When asked to append to a note: call appendToNote directly — no need to readNote first
+- Preserve all existing content unless the user explicitly asks you to remove something
+- deleteNote is irreversible — only call it when the user's intent is unambiguous
+- **Do NOT add a Markdown heading (e.g. \`# Title\`) at the top of note content.** Obsidian uses the filename as the note title — adding a heading creates an ugly duplicate. Start note content directly with the body text or frontmatter.`;
 
   if (!activeNote?.trim()) return base;
 
@@ -63,7 +213,7 @@ function historyToGemini(history: StoredMessage[]): any[] {
   }));
 }
 
-// ── AutoRAG search ────────────────────────────────────────────────────────────
+// ── Tool: searchVault ─────────────────────────────────────────────────────────
 
 async function executeSearchVault(env: Env, query: string): Promise<SearchResult[]> {
   try {
@@ -96,25 +246,282 @@ async function executeSearchVault(env: Env, query: string): Promise<SearchResult
   }
 }
 
+// ── Tool: listNotes ───────────────────────────────────────────────────────────
+
+interface NoteListEntry {
+  path: string;
+  updatedAt: number;
+  size: number;
+}
+
+async function executeListNotes(
+  env:    Env,
+  folder: string | undefined,
+): Promise<{ notes: NoteListEntry[]; count: number }> {
+  try {
+    const prefix = folder
+      ? (folder.endsWith('/') ? folder : `${folder}/`)
+      : undefined;
+
+    const rows = prefix
+      ? await env.DB
+          .prepare('SELECT path, updatedAt, size FROM vaultFiles WHERE path LIKE ? ORDER BY path ASC')
+          .bind(`${prefix}%`)
+          .all<NoteListEntry>()
+      : await env.DB
+          .prepare('SELECT path, updatedAt, size FROM vaultFiles ORDER BY path ASC')
+          .all<NoteListEntry>();
+
+    const notes = rows.results ?? [];
+    return { notes, count: notes.length };
+  } catch (err) {
+    console.error('[listNotes] D1 error:', err);
+    return { notes: [], count: 0 };
+  }
+}
+
+// ── Tool: readNote ────────────────────────────────────────────────────────────
+
+async function executeReadNote(
+  env:  Env,
+  path: string,
+): Promise<{ path: string; content: string } | { error: string }> {
+  const filePath = normalizePath(path);
+  try {
+    const object = await env.VAULT.get(filePath);
+    if (!object) return { error: `Note not found: "${filePath}"` };
+    const content = await object.text();
+    return { path: filePath, content };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[readNote] Error reading "${filePath}":`, msg);
+    return { error: msg };
+  }
+}
+
+// ── Tool: createNote ──────────────────────────────────────────────────────────
+
+async function executeCreateNote(
+  env:     Env,
+  path:    string,
+  content: string,
+): Promise<{ success: boolean; path: string; error?: string }> {
+  const filePath = normalizePath(path);
+  try {
+    const existing = await env.VAULT.head(filePath);
+    if (existing) {
+      return {
+        success: false,
+        path: filePath,
+        error: `Note already exists at "${filePath}". Use editNote to update it.`,
+      };
+    }
+
+    const now         = Date.now();
+    const contentHash = await sha256Hex(content);
+    const size        = new TextEncoder().encode(content).length;
+
+    await env.VAULT.put(filePath, content, {
+      httpMetadata:   { contentType: 'text/markdown; charset=utf-8' },
+      customMetadata: { contentHash, updatedAt: String(now) },
+    });
+
+    await env.DB.batch([
+      env.DB
+        .prepare(`
+          INSERT INTO vaultFiles (path, contentHash, updatedAt, size)
+          VALUES (?, ?, ?, ?)
+          ON CONFLICT(path) DO UPDATE SET
+            contentHash = excluded.contentHash,
+            updatedAt   = excluded.updatedAt,
+            size        = excluded.size
+        `)
+        .bind(filePath, contentHash, now, size),
+      env.DB
+        .prepare('DELETE FROM deletedFiles WHERE path = ?')
+        .bind(filePath),
+    ]);
+
+    console.log(`[createNote] Created "${filePath}" (${size} bytes)`);
+    return { success: true, path: filePath };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[createNote] Error creating "${filePath}":`, msg);
+    return { success: false, path: filePath, error: msg };
+  }
+}
+
+// ── Tool: editNote ────────────────────────────────────────────────────────────
+
+async function executeEditNote(
+  env:     Env,
+  path:    string,
+  content: string,
+): Promise<{ success: boolean; path: string; error?: string }> {
+  const filePath = normalizePath(path);
+  try {
+    const existing = await env.VAULT.head(filePath);
+    if (!existing) {
+      return {
+        success: false,
+        path: filePath,
+        error: `Note not found: "${filePath}". Use createNote to create it.`,
+      };
+    }
+
+    const now         = Date.now();
+    const contentHash = await sha256Hex(content);
+    const size        = new TextEncoder().encode(content).length;
+
+    await env.VAULT.put(filePath, content, {
+      httpMetadata:   { contentType: 'text/markdown; charset=utf-8' },
+      customMetadata: { contentHash, updatedAt: String(now) },
+    });
+
+    await env.DB
+      .prepare(`
+        INSERT INTO vaultFiles (path, contentHash, updatedAt, size)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(path) DO UPDATE SET
+          contentHash = excluded.contentHash,
+          updatedAt   = excluded.updatedAt,
+          size        = excluded.size
+      `)
+      .bind(filePath, contentHash, now, size)
+      .run();
+
+    console.log(`[editNote] Updated "${filePath}" (${size} bytes)`);
+    return { success: true, path: filePath };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[editNote] Error editing "${filePath}":`, msg);
+    return { success: false, path: filePath, error: msg };
+  }
+}
+
+// ── Tool: appendToNote ────────────────────────────────────────────────────────
+
+async function executeAppendToNote(
+  env:     Env,
+  path:    string,
+  content: string,
+): Promise<{ success: boolean; path: string; error?: string }> {
+  const filePath = normalizePath(path);
+  try {
+    const object = await env.VAULT.get(filePath);
+    if (!object) {
+      return {
+        success: false,
+        path: filePath,
+        error: `Note not found: "${filePath}". Use createNote to create it first.`,
+      };
+    }
+
+    const existing   = await object.text();
+    // Ensure a clean blank-line boundary between existing content and the new block
+    const separator  = existing.endsWith('\n\n') ? '' : existing.endsWith('\n') ? '\n' : '\n\n';
+    const newContent = existing + separator + content.trim() + '\n';
+
+    const now         = Date.now();
+    const contentHash = await sha256Hex(newContent);
+    const size        = new TextEncoder().encode(newContent).length;
+
+    await env.VAULT.put(filePath, newContent, {
+      httpMetadata:   { contentType: 'text/markdown; charset=utf-8' },
+      customMetadata: { contentHash, updatedAt: String(now) },
+    });
+
+    await env.DB
+      .prepare(`
+        INSERT INTO vaultFiles (path, contentHash, updatedAt, size)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(path) DO UPDATE SET
+          contentHash = excluded.contentHash,
+          updatedAt   = excluded.updatedAt,
+          size        = excluded.size
+      `)
+      .bind(filePath, contentHash, now, size)
+      .run();
+
+    console.log(`[appendToNote] Appended to "${filePath}" (now ${size} bytes)`);
+    return { success: true, path: filePath };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[appendToNote] Error appending to "${filePath}":`, msg);
+    return { success: false, path: filePath, error: msg };
+  }
+}
+
+// ── Tool: deleteNote ──────────────────────────────────────────────────────────
+
+async function executeDeleteNote(
+  env:  Env,
+  path: string,
+): Promise<{ success: boolean; path: string; error?: string }> {
+  const filePath = normalizePath(path);
+  try {
+    const existing = await env.VAULT.head(filePath);
+    if (!existing) {
+      return { success: false, path: filePath, error: `Note not found: "${filePath}".` };
+    }
+
+    const deletedAt = Date.now();
+
+    await Promise.all([
+      env.VAULT.delete(filePath),
+      env.DB.batch([
+        env.DB
+          .prepare('DELETE FROM vaultFiles WHERE path = ?')
+          .bind(filePath),
+        env.DB
+          .prepare(`
+            INSERT INTO deletedFiles (path, deletedAt)
+            VALUES (?, ?)
+            ON CONFLICT(path) DO UPDATE SET deletedAt = excluded.deletedAt
+          `)
+          .bind(filePath, deletedAt),
+      ]),
+    ]);
+
+    console.log(`[deleteNote] Deleted "${filePath}"`);
+    return { success: true, path: filePath };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[deleteNote] Error deleting "${filePath}":`, msg);
+    return { success: false, path: filePath, error: msg };
+  }
+}
+
 // ── WebSocket helper ──────────────────────────────────────────────────────────
 
 function wsSend(ws: WebSocket, payload: WsOutgoing): void {
   ws.send(JSON.stringify(payload));
 }
 
+// ── Tool label helper ─────────────────────────────────────────────────────────
+
+function toolLabel(name: string, args: Record<string, unknown>): string {
+  switch (name) {
+    case 'searchVault':  return `Searching vault for "${args?.query}"…`;
+    case 'listNotes':    return args?.folder ? `Listing notes in "${args.folder}"…` : 'Listing all notes…';
+    case 'readNote':     return `Reading "${args?.path}"…`;
+    case 'createNote':   return `Creating "${args?.path}"…`;
+    case 'editNote':     return `Editing "${args?.path}"…`;
+    case 'appendToNote': return `Appending to "${args?.path}"…`;
+    case 'deleteNote':   return `Deleting "${args?.path}"…`;
+    default:             return `Using ${name}…`;
+  }
+}
+
 // ── Gemini non-streaming call (tool-calling rounds) ───────────────────────────
 
-async function geminiCall(
-  env:      Env,
-  system:   string,
-  contents: any[],
-): Promise<any> {
+async function geminiCall(env: Env, system: string, contents: any[]): Promise<any> {
   const body = {
     system_instruction: { parts: [{ text: system }] },
     contents,
     generationConfig: {
-      maxOutputTokens: 1024,
-      thinkingConfig: { thinkingBudget: -1 }, // enables thought signatures for function calling
+      maxOutputTokens: 2048,
+      thinkingConfig: { thinkingBudget: -1 },
     },
     tools: [{ functionDeclarations: FUNCTION_DECLARATIONS }],
     tool_config: { function_calling_config: { mode: 'AUTO' } },
@@ -133,9 +540,6 @@ async function geminiCall(
 }
 
 // ── Gemini streaming call (final answer + thinking) ───────────────────────────
-// Thinking tokens arrive as parts with `thought: true` before the answer parts.
-// We stream thinking tokens as `thinkingToken` events, then send `thinkingDone`
-// once the first real answer token arrives.
 
 async function streamFinalAnswer(
   env:       Env,
@@ -148,10 +552,9 @@ async function streamFinalAnswer(
     system_instruction: { parts: [{ text: system }] },
     contents,
     generationConfig: {
-      maxOutputTokens: 4096,
-      thinkingConfig: { thinkingBudget: -1, includeThoughts: true }, // -1 = dynamic; includeThoughts sends thought parts in stream
+      maxOutputTokens: 2048,
+      thinkingConfig: { thinkingBudget: -1 },
     },
-    // No tools in final stream — prevents tool-calling in the answer phase
   };
 
   const res = await fetch(
@@ -163,21 +566,23 @@ async function streamFinalAnswer(
     const err = await res.text();
     throw new Error(`Gemini stream error ${res.status}: ${err}`);
   }
+  if (!res.body) throw new Error('No response body from Gemini stream');
 
-  const reader    = res.body!.getReader();
-  const decoder   = new TextDecoder();
-  let accumulated = '';
-  let sseBuffer   = '';
-  let wasThinking = false; // true once we've seen at least one thought token
-  let answerStarted = false; // true once first real answer token sent
+  const reader      = res.body.getReader();
+  const decoder     = new TextDecoder();
+  let accumulated   = '';
+  let sseBuffer     = '';   // holds incomplete lines across read() boundaries
+  let wasThinking   = false;
+  let answerStarted = false;
 
   try {
     while (true) {
-      if (isStopped()) { await reader.cancel(); break; }
-
+      if (isStopped()) break;
       const { done, value } = await reader.read();
       if (done) break;
 
+      // Append to buffer and split on newlines, keeping the last (possibly
+      // incomplete) line in the buffer for the next iteration.
       sseBuffer += decoder.decode(value, { stream: true });
       const lines = sseBuffer.split('\n');
       sseBuffer   = lines.pop() ?? '';
@@ -191,17 +596,13 @@ async function streamFinalAnswer(
         try {
           const parsed = JSON.parse(payload);
           const parts: any[] = parsed?.candidates?.[0]?.content?.parts ?? [];
-
           for (const part of parts) {
             const text: string = part.text ?? '';
             if (!text) continue;
-
             if (part.thought === true) {
-              // Thinking token
               wasThinking = true;
               wsSend(ws, { type: 'thinkingToken', content: text });
             } else {
-              // Real answer token — if we were thinking, signal the transition
               if (wasThinking && !answerStarted) {
                 answerStarted = true;
                 wsSend(ws, { type: 'thinkingDone' });
@@ -233,22 +634,21 @@ export async function runAgentTurn(
   const systemPrompt = buildSystemPrompt(activeNote);
   const contents: any[] = historyToGemini(history);
 
-  // ── Tool-calling loop (non-streaming) ─────────────────────────────────────
+  // ── Tool-calling loop ─────────────────────────────────────────────────────
   for (let round = 0; round < MAX_ROUNDS; round++) {
     if (isStopped()) { wsSend(ws, { type: 'done' }); return ''; }
 
     const data: any = await geminiCall(env, systemPrompt, contents);
     const parts: any[] = data?.candidates?.[0]?.content?.parts ?? [];
-
     const fnParts = parts.filter((p: any) => p.functionCall != null);
 
-    // No function calls → exit loop, stream final answer
     if (!fnParts.length) break;
 
-    // Record the model turn
-    contents.push({ role: 'model', parts });
+    // Strip thought parts — Gemini returns {thought:true} tokens during extended thinking,
+    // but including them in conversation history causes the next call to produce a truncated response.
+    const historyParts = parts.filter((p: any) => !p.thought);
+    contents.push({ role: 'model', parts: historyParts });
 
-    // Execute each tool call
     const functionResponses: any[] = [];
 
     for (const part of fnParts) {
@@ -257,28 +657,43 @@ export async function runAgentTurn(
       const { name, args } = part.functionCall;
       const reasoning: string | null = args?.reasoning ?? null;
 
-      wsSend(ws, {
-        type:      'toolCall',
-        name,
-        args,
-        label:     name === 'searchVault'
-          ? `Searching vault for "${args?.query}"…`
-          : `Using ${name}…`,
-        reasoning,
-      });
+      wsSend(ws, { type: 'toolCall', name, args, label: toolLabel(name, args), reasoning });
 
       let resultData: any;
 
       if (name === 'searchVault') {
         const results = await executeSearchVault(env, args?.query ?? '');
-        wsSend(ws, { type: 'toolResult', name, results });
-        resultData = {
-          results: results.map((r) => ({
-            filename: r.filename,
-            score:    r.score,
-            excerpt:  r.excerpt,
-          })),
-        };
+        wsSend(ws, { type: 'toolResult', name, args, results });
+        resultData = { results: results.map((r) => ({ filename: r.filename, score: r.score, excerpt: r.excerpt })) };
+
+      } else if (name === 'listNotes') {
+        resultData = await executeListNotes(env, args?.folder);
+        wsSend(ws, { type: 'toolResult', name, args, results: [] });
+
+      } else if (name === 'readNote') {
+        resultData = await executeReadNote(env, args?.path ?? '');
+        wsSend(ws, { type: 'toolResult', name, args, results: [] });
+
+      } else if (name === 'createNote') {
+        resultData = await executeCreateNote(env, args?.path ?? '', args?.content ?? '');
+        wsSend(ws, { type: 'toolResult', name, args, results: [] });
+        if (resultData.success) wsSend(ws, { type: 'syncRequired' });
+
+      } else if (name === 'editNote') {
+        resultData = await executeEditNote(env, args?.path ?? '', args?.content ?? '');
+        wsSend(ws, { type: 'toolResult', name, args, results: [] });
+        if (resultData.success) wsSend(ws, { type: 'syncRequired' });
+
+      } else if (name === 'appendToNote') {
+        resultData = await executeAppendToNote(env, args?.path ?? '', args?.content ?? '');
+        wsSend(ws, { type: 'toolResult', name, args, results: [] });
+        if (resultData.success) wsSend(ws, { type: 'syncRequired' });
+
+      } else if (name === 'deleteNote') {
+        resultData = await executeDeleteNote(env, args?.path ?? '');
+        wsSend(ws, { type: 'toolResult', name, args, results: [] });
+        if (resultData.success) wsSend(ws, { type: 'syncRequired' });
+
       } else {
         resultData = { error: `Unknown function: ${name}` };
       }
@@ -286,7 +701,6 @@ export async function runAgentTurn(
       functionResponses.push({ functionResponse: { name, response: resultData } });
     }
 
-    // All function responses bundled as a single user turn (Gemini requirement)
     if (functionResponses.length) {
       contents.push({ role: 'user', parts: functionResponses });
     }
@@ -294,9 +708,7 @@ export async function runAgentTurn(
 
   if (isStopped()) { wsSend(ws, { type: 'done' }); return ''; }
 
-  // ── Stream final answer with thinking ─────────────────────────────────────
   const finalText = await streamFinalAnswer(env, systemPrompt, contents, ws, isStopped);
-
   wsSend(ws, { type: 'done' });
   return finalText;
 }

@@ -99,6 +99,7 @@ export type WsOutgoing =
   | { type: 'thinkingDone' }                     // thinking phase complete, response starting
   | { type: 'token';         content: string }
   | { type: 'toolCall';      name: string; args: Record<string, unknown>; label: string; reasoning: string | null }
-  | { type: 'toolResult';    name: string; results: SearchResult[] }
+  | { type: 'toolResult';    name: string; args: Record<string, unknown>; results: SearchResult[] }
+  | { type: 'syncRequired' }
   | { type: 'done' }
   | { type: 'error';         message: string };
