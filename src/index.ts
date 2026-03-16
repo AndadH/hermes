@@ -3,6 +3,7 @@ import { cors } from 'hono/cors';
 
 import type { Env } from './types';
 import { authMiddleware, validateWsSecret } from './middleware';
+import { handleTelegramWebhook } from './telegramHandlers';
 import {
   handleManifest,
   handleUpload,
@@ -34,6 +35,8 @@ app.use(
 app.get('/health', (c) =>
   c.json({ status: 'ok', timestamp: Date.now(), env: c.env.ENVIRONMENT ?? 'production' }),
 );
+
+app.post('/telegram/webhook', handleTelegramWebhook);
 
 // ── WebSocket chat ────────────────────────────────────────────────────────────
 // Route: GET /ws/new          → creates a new ChatDO, streams back sessionId

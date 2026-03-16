@@ -13,6 +13,11 @@ export interface Env {
 
   // Optional vars
   ENVIRONMENT?: string;
+  TELEGRAM_BOT_TOKEN: string;
+  TELEGRAM_ALLOWED_USER_ID: string;
+  GOOGLE_CAL_CLIENT_EMAIL: string;
+  GOOGLE_CAL_PRIVATE_KEY: string;
+  GOOGLE_CALENDAR_ID: string;
 }
 
 // ── D1 row types ─────────────────────────────────────────────────────────────

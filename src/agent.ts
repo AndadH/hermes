@@ -176,29 +176,33 @@ const FUNCTION_DECLARATIONS = [
       required: ['reasoning', 'path', 'content'],
     },
   },
-  {
-    name: 'appendToNote',
-    description:
-      'Append text to the end of an existing note without replacing any existing content. Good for journals, logs, and daily notes. Fails if the note does not exist.',
-    parameters: {
-      type: 'OBJECT',
-      properties: {
-        reasoning: {
-          type: 'STRING',
-          description: 'One sentence explaining what is being appended and why.',
-        },
-        path: {
-          type: 'STRING',
-          description: 'Vault-relative path of the note to append to.',
-        },
-        content: {
-          type: 'STRING',
-          description: 'Markdown text to append. A blank line separator will be added automatically.',
-        },
-      },
-      required: ['reasoning', 'path', 'content'],
-    },
-  },
+    {
+     name: 'patchNote',
+     description:
+       'Replace a specific substring within an existing note. Reads the note, finds the first occurrence of `find`, and replaces it with `replace`. Fails if `find` is not found or the note does not exist. Prefer this over editNote for targeted changes.',
+     parameters: {
+       type: 'OBJECT',
+       properties: {
+         reasoning: {
+           type: 'STRING',
+           description: 'One sentence explaining what is being changed and why.',
+         },
+         path: {
+           type: 'STRING',
+           description: 'Vault-relative path of the note to patch.',
+         },
+         find: {
+           type: 'STRING',
+           description: 'Exact string to locate in the note. Must match the current content character-for-character.',
+         },
+         replace: {
+           type: 'STRING',
+           description: 'String to substitute in place of `find`. Use an empty string to delete the matched text.',
+         },
+       },
+       required: ['reasoning', 'path', 'find', 'replace'],
+     },
+   },
   {
     name: 'deleteNote',
     description:
@@ -218,12 +222,103 @@ const FUNCTION_DECLARATIONS = [
       required: ['reasoning', 'path'],
     },
   },
+  {
+    name: 'searchChatHistory',
+    description:
+      'Search previous Telegram chat history for context that is older than the current session. Use this if the user asks about something discussed days or weeks ago.',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        reasoning: {
+          type: 'STRING',
+          description: 'One sentence explaining why you need to search past chats.',
+        },
+        query: {
+          type: 'STRING',
+          description: 'A specific keyword or phrase to search for in the chat history.',
+        },
+      },
+      required: ['reasoning', 'query'],
+    },
+  },
+  {
+    name: 'getCalendarEvents',
+    description: 'Fetch upcoming events from the user\'s Google Calendar. Use this to check their schedule, find free time, or prepare them for the day.',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        reasoning: {
+          type: 'STRING',
+          description: 'Why you are checking the calendar.',
+        },
+        timeMin: {
+          type: 'STRING',
+          description: 'ISO string of the start time (e.g., 2026-03-15T00:00:00Z). Defaults to now if omitted.',
+        },
+        timeMax: {
+          type: 'STRING',
+          description: 'ISO string of the end time (e.g., 2026-03-15T23:59:59Z).',
+        },
+      },
+      required: ['reasoning'],
+    },
+  },
+  {
+    name: 'createCalendarEvent',
+    description: 'Create a new event on the user\'s Google Calendar. Always confirm the details with the user before booking.',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        reasoning: {
+          type: 'STRING',
+          description: 'Why this event is being created.',
+        },
+        summary: {
+          type: 'STRING',
+          description: 'The title of the event.',
+        },
+        startTime: {
+          type: 'STRING',
+          description: 'ISO string of the exact start time.',
+        },
+        endTime: {
+          type: 'STRING',
+          description: 'ISO string of the exact end time.',
+        },
+        description: {
+          type: 'STRING',
+          description: 'Optional. Details or context for the event.',
+        },
+      },
+      required: ['reasoning', 'summary', 'startTime', 'endTime'],
+    },
+  }
 ];
 
 // ── System prompt ─────────────────────────────────────────────────────────────
 
 function buildSystemPrompt(activeNote: string): string {
+
+  const now = new Date();
+  const currentTime = now.toLocaleString('en-US', {
+    timeZone: 'America/Denver',
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZoneName: 'short'
+  });
+  const offsetStr = new Intl.DateTimeFormat('en-US', { 
+    timeZone: 'America/Denver', 
+    timeZoneName: 'longOffset' 
+  }).format(now).split('GMT')[1] || 'Z';
+
   const base = `You are Hermes, a sharp and proactive executive assistant with deep access to a personal Obsidian knowledge vault.
+
+CURRENT SYSTEM TIME: ${currentTime}
+YOUR TIMEZONE OFFSET: ${offsetStr}
 
 ## Response Style
 - Use rich Markdown: headers, bullet points, **bold**, *italic*, \`code\`, blockquotes, and tables where useful
@@ -233,14 +328,17 @@ function buildSystemPrompt(activeNote: string): string {
 - NEVER output raw JSON or function call schemas
 
 ## Tool usage guidelines
-- When asked to edit a note: always call readNote first, then editNote with the full updated content
-- When asked to create a note: call createNote directly
-- When asked to append to a note: call appendToNote directly — no need to readNote first
+- When you to need to edit a note: always call readNote first, then editNote with the full updated content
+- When you need to to create a note: call createNote directly
+- When you need to make a targeted edit to a note: call readNote first, then patchNote with the exact text to replace
 - Preserve all existing content unless the user explicitly asks you to remove something
 - deleteNote is irreversible — only call it when the user's intent is unambiguous
 - Use webSearch when the user asks about current events, recent news, external facts, or anything not in the vault
 - After webSearch, call fetchPage on the most relevant result URL to get the full article or page content before answering
 - Always cite your web sources with a Markdown link: [Page Title](https://url)
+- **Use searchChatHistory when the user references past conversations, previous chat topics, or things discussed days/weeks ago.**
+- **Keep searchChatHistory queries simple (1-3 distinct keywords) for the best full-text search results.**
+- **Use GetCalendarEvents to retrieve calendar events for admin and createCalendarEvent to create new events for admin**
 - **Do NOT add a Markdown heading (e.g. \`# Title\`) at the top of note content.** Obsidian uses the filename as the note title — adding a heading creates an ugly duplicate. Start note content directly with the body text or frontmatter.`;
 
   if (!activeNote?.trim()) return base;
@@ -293,6 +391,45 @@ async function executeSearchVault(env: Env, query: string): Promise<SearchResult
   } catch (err) {
     console.error('[searchVault] AutoRAG error:', err);
     return [];
+  }
+}
+
+// ── Tool: searchChatHistory ───────────────────────────────────────────────────
+
+async function executeSearchChatHistory(env: Env, query: string): Promise<any> {
+  try {
+    // FTS5 MATCH supports advanced syntax (AND, OR, NOT, prefix*). 
+    // We clean the query to prevent SQL syntax errors from weird LLM formatting.
+    const cleanQuery = query.replace(/[^a-zA-Z0-9\s]/g, '').trim();
+    if (!cleanQuery) return { message: "Search query was empty." };
+
+    // Join the original table with the FTS search index
+    const { results } = await env.DB.prepare(`
+      SELECT 
+        t.role, 
+        t.content, 
+        datetime(t.timestamp / 1000, 'unixepoch') as date
+      FROM telegram_history t
+      JOIN telegram_history_fts fts ON t.id = fts.rowid
+      WHERE telegram_history_fts MATCH ?
+      ORDER BY t.timestamp DESC 
+      LIMIT 15
+    `)
+    // Adding '*' makes it a prefix search (e.g., "deploy*" matches "deploying")
+    .bind(`"${cleanQuery}"*`)
+    .all();
+    
+    if (!results || results.length === 0) {
+      return { message: `No past conversations found matching "${cleanQuery}".` };
+    }
+
+    // Reverse so chronological order is maintained for the LLM
+    return { 
+      results: results.reverse().map((row: any) => `[${row.date}] ${row.role}: ${row.content}`) 
+    };
+  } catch (err) {
+    console.error('[searchChatHistory] D1 error:', err);
+    return { error: 'Failed to search chat history.' };
   }
 }
 
@@ -502,6 +639,64 @@ async function executeAppendToNote(
   }
 }
 
+// ── Tool: patchNote ────────────────────────────────────────────────────────
+
+async function executePatchNote(
+    env: Env,
+    path: string,
+    find: string,
+    replace: string,
+): Promise<{ success: boolean; path: string; error?: string }> {
+    const filePath = normalizePath(path);
+    try {
+        const object = await env.VAULT.get(filePath);
+        if(!object) {
+            return{
+                success: false,
+                path: filePath,
+                error: `Note not found: "${filePath}". Use createNote to create it first.`
+            }
+        }
+
+        const existing = await object.text();
+        if(!existing.includes(find)) {
+            return {
+                success: false,
+                path: filePath,
+                error: `Patch failed: string to find was not found in "${filePath}". Read the note first to get the exact current content.`
+            }
+        }
+
+        const newContent = existing.replace(find, replace);
+        const now = Date.now();
+        const contentHash = await sha256Hex(newContent);
+        const size = new TextEncoder().encode(newContent).length;
+
+        await env.VAULT.put(filePath, newContent, {
+            httpMetadata: { contentType: 'text/markdown; charset=utf-8' },
+            customMetadata: { contentHash, updatedAt: String(now) },
+        });
+
+        await env.DB
+            .prepare(`
+                INSERT INTO vaultFiles (path, contentHash, updatedAt, size)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(path) DO UPDATE SET
+                    contentHash = excluded.contentHash,
+                    updatedAt   = excluded.updatedAt,
+                    size        = excluded.size
+            `)
+            .bind(filePath, contentHash, now, size)
+            .run();
+        console.log(`[patchNote] Patched "${filePath}" (now ${size} bytes)`);
+        return { success: true, path: filePath };
+    } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[patchNote] Error reading "${filePath}":`, msg);
+        return { success: false, path: filePath, error: msg };
+    }
+}
+
 // ── Tool: deleteNote ──────────────────────────────────────────────────────────
 
 async function executeDeleteNote(
@@ -671,6 +866,102 @@ function wsSend(ws: WebSocket, payload: WsOutgoing): void {
   ws.send(JSON.stringify(payload));
 }
 
+async function executeGetCalendarEvents(env: Env, args: any): Promise<any> {
+  try {
+    // Note: We'll need a helper function to generate the Google OAuth JWT token
+    const token = await getGoogleAuthToken(env); 
+    
+    const url = new URL(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(env.GOOGLE_CALENDAR_ID)}/events`);
+    
+    // Always expand recurring events into single instances
+    url.searchParams.append('singleEvents', 'true');
+    url.searchParams.append('orderBy', 'startTime');
+    url.searchParams.append('maxResults', '15');
+
+    // Apply the flexible parameters chosen by the LLM
+    if (args.query) url.searchParams.append('q', args.query);
+    if (args.timeMin) url.searchParams.append('timeMin', args.timeMin);
+    if (args.timeMax) url.searchParams.append('timeMax', args.timeMax);
+    
+    // If it's a general request with no parameters, default to "upcoming events from now"
+    if (!args.timeMin && !args.query) {
+      url.searchParams.append('timeMin', new Date().toISOString());
+    }
+
+    const res = await fetch(url.toString(), {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+
+    if (!res.ok) {
+      const errorText = await res.text();
+      throw new Error(`Google API error ${res.status}: ${errorText}`);
+    }
+
+    const data: any = await res.json();
+    const events = data.items ?? [];
+
+    if (events.length === 0) {
+      return { message: 'No events found for this request.' };
+    }
+
+    // Strip down the massive Google API response to save LLM tokens
+    return {
+      events: events.map((e: any) => ({
+        summary: e.summary,
+        description: e.description,
+        startTime: e.start?.dateTime || e.start?.date, // Handles both timed and all-day events
+        endTime: e.end?.dateTime || e.end?.date,
+        location: e.location,
+        status: e.status
+      }))
+    };
+  } catch (err) {
+    console.error('[getCalendarEvents] Error:', err);
+    return { error: 'Failed to fetch calendar events.' };
+  }
+}
+
+// ── Tool: createCalendarEvent ─────────────────────────────────────────────────
+
+async function executeCreateCalendarEvent(env: Env, args: any): Promise<any> {
+  try {
+    const token = await getGoogleAuthToken(env);
+    const url = `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(env.GOOGLE_CALENDAR_ID)}/events`;
+
+    const body = {
+      summary: args.summary,
+      description: args.description || '',
+      start: { dateTime: args.startTime },
+      end: { dateTime: args.endTime },
+    };
+
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(body)
+    });
+
+    if (!res.ok) {
+      const errorText = await res.text();
+      throw new Error(`Google API error ${res.status}: ${errorText}`);
+    }
+
+    const data: any = await res.json();
+    
+    return { 
+      message: 'Event created successfully.',
+      eventLink: data.htmlLink,
+      eventId: data.id
+    };
+  } catch (err) {
+    console.error('[createCalendarEvent] Error:', err);
+    return { error: 'Failed to create calendar event.' };
+  }
+}
+
 // ── Tool label helper ─────────────────────────────────────────────────────────
 
 function toolLabel(name: string, args: Record<string, unknown>): string {
@@ -680,9 +971,12 @@ function toolLabel(name: string, args: Record<string, unknown>): string {
     case 'readNote':     return `Reading "${args?.path}"…`;
     case 'createNote':   return `Creating "${args?.path}"…`;
     case 'editNote':     return `Editing "${args?.path}"…`;
-    case 'appendToNote': return `Appending to "${args?.path}"…`;
+    case 'patchNote':    return `Patching "${args?.path}"…`;
     case 'deleteNote':   return `Deleting "${args?.path}"…`;
     case 'webSearch':  return `Searching the web for "${args?.query}"…`;
+    case 'searchChatHistory': return `Searching past chats for "${args?.query}"...`;
+    case 'getCalendarEvents':   return `Checking calendar...`;
+    case 'createCalendarEvent': return `Booking "${args?.summary}"...`;
     case 'fetchPage':  return `Reading ${args?.url}…`;
     default:             return `Using ${name}…`;
   }
@@ -859,8 +1153,8 @@ export async function runAgentTurn(
         wsSend(ws, { type: 'toolResult', name, args, results: [] });
         if (resultData.success) wsSend(ws, { type: 'syncRequired' });
 
-      } else if (name === 'appendToNote') {
-        resultData = await executeAppendToNote(env, args?.path ?? '', args?.content ?? '');
+      } else if (name === 'patchNote') {
+        resultData = await executePatchNote(env, args?.path ?? '', args?.find ?? '', args?.replace ?? '');
         wsSend(ws, { type: 'toolResult', name, args, results: [] });
         if (resultData.success) wsSend(ws, { type: 'syncRequired' });
 
@@ -883,7 +1177,18 @@ export async function runAgentTurn(
       } else if (name === 'fetchPage') {
         resultData = await executeFetchPage(args?.url ?? '');
         wsSend(ws, { type: 'toolResult', name, args, results: [] });
-      } else {
+      } else if (name === 'searchChatHistory') {
+        resultData = await executeSearchChatHistory(env, args?.query ?? '');
+        wsSend(ws, { type: 'toolResult', name, args, results: [] });} 
+      else if (name === 'getCalendarEvents') {
+        resultData = await executeGetCalendarEvents(env, args ?? {});
+        wsSend(ws, { type: 'toolResult', name, args, results: [] });
+      }
+      else if (name === 'createCalendarEvent') {
+        resultData = await executeCreateCalendarEvent(env, args ?? {});
+        wsSend(ws, { type: 'toolResult', name, args, results: [] });
+      }
+      else {
         resultData = { error: `Unknown function: ${name}` };
       }
 
@@ -900,4 +1205,81 @@ export async function runAgentTurn(
   const finalText = await streamFinalAnswer(env, systemPrompt, contents, ws, isStopped);
   wsSend(ws, { type: 'done' });
   return finalText;
+}
+
+// ── Google Calendar Auth Helper ───────────────────────────────────────────────
+
+async function getGoogleAuthToken(env: Env): Promise<string> {
+  const header = { alg: 'RS256', typ: 'JWT' };
+  const now = Math.floor(Date.now() / 1000);
+  const claimSet = {
+    iss: env.GOOGLE_CAL_CLIENT_EMAIL,
+    scope: 'https://www.googleapis.com/auth/calendar.events',
+    aud: 'https://oauth2.googleapis.com/token',
+    exp: now + 3600,
+    iat: now,
+  };
+
+  // Base64Url encoding helper
+  const encodeBase64Url = (obj: any) => 
+    btoa(JSON.stringify(obj)).replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
+
+  const encodedHeader = encodeBase64Url(header);
+  const encodedClaimSet = encodeBase64Url(claimSet);
+  const unsignedJwt = `${encodedHeader}.${encodedClaimSet}`;
+
+  // 1. Clean the PEM string and convert to binary
+  const pemHeader = "-----BEGIN PRIVATE KEY-----";
+  const pemFooter = "-----END PRIVATE KEY-----";
+  // Replace actual literal newlines or escaped \n characters
+  const pemContents = env.GOOGLE_CAL_PRIVATE_KEY
+    .replace(pemHeader, '')
+    .replace(pemFooter, '')
+    .replace(/\\n/g, '')
+    .replace(/\s/g, '');
+    
+  const binaryDerString = atob(pemContents);
+  const binaryDer = new Uint8Array(binaryDerString.length);
+  for (let i = 0; i < binaryDerString.length; i++) {
+    binaryDer[i] = binaryDerString.charCodeAt(i);
+  }
+
+  // 2. Import the key into Web Crypto
+  const key = await crypto.subtle.importKey(
+    "pkcs8",
+    binaryDer.buffer,
+    { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+
+  // 3. Sign the JWT
+  const signatureBuffer = await crypto.subtle.sign(
+    "RSASSA-PKCS1-v1_5",
+    key,
+    new TextEncoder().encode(unsignedJwt)
+  );
+
+  const signatureBase64Url = btoa(String.fromCharCode(...new Uint8Array(signatureBuffer)))
+    .replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
+
+  const signedJwt = `${unsignedJwt}.${signatureBase64Url}`;
+
+  // 4. Exchange the signed JWT for a Google OAuth Access Token
+  const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+      assertion: signedJwt,
+    }),
+  });
+
+  if (!tokenRes.ok) {
+    const err = await tokenRes.text();
+    throw new Error(`Failed to get Google Token: ${err}`);
+  }
+
+  const tokenData: any = await tokenRes.json();
+  return tokenData.access_token; // Valid for 1 hour
 }
