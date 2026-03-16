@@ -1,5 +1,5 @@
 import type { Context } from 'hono';
-import type { Env, SearchResult } from './types';
+import type { Env, SearchResult } from '../types';
 
 /**
  * POST /search
@@ -9,9 +9,7 @@ import type { Env, SearchResult } from './types';
  * Returns up to 50 results with scores and Obsidian wikilinks.
  * Used by the Obsidian Semantic Search panel directly (without the chat agent).
  */
-export async function handleSearch(
-  c: Context<{ Bindings: Env }>,
-): Promise<Response> {
+export async function handleSearch(c: Context<{ Bindings: Env }>): Promise<Response> {
   const body = await c.req.json<{ query?: string }>();
   const query = body.query?.trim();
 
@@ -29,12 +27,10 @@ export async function handleSearch(
     const results: SearchResult[] = (response?.data ?? []).map((r: any) => {
       const rawFilename: string = r.filename ?? r.id ?? 'Unknown';
       const noteName = rawFilename.replace(/\.md$/i, '');
-
       const excerpt: string = (r.content ?? [])
         .map((c: any) => (c.text as string) ?? '')
         .join('\n')
         .slice(0, 400);
-
       return {
         filename: rawFilename,
         score: Math.round((r.score ?? 0) * 100) / 100,

@@ -2,16 +2,16 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 
 import type { Env } from './types';
-import { authMiddleware, validateWsSecret } from './middleware';
-import { handleTelegramWebhook } from './telegramHandlers';
+import { authMiddleware, validateWsSecret } from './handlers/middleware';
+import { handleTelegramWebhook } from './handlers/telegramHandlers';
 import {
   handleManifest,
   handleUpload,
   handleBatchDownload,
   handleDelete,
-} from './syncHandlers';
-import { handleSearch } from './searchHandlers';
-import { ChatDO } from './chatDO';
+} from './handlers/syncHandlers';
+import { handleSearch } from './handlers/searchHandlers';
+import { ChatDO } from './durable/chatDO';
 
 // Re-export the DO class so wrangler can register it
 export { ChatDO };
@@ -50,7 +50,6 @@ app.get('/ws/:sessionId', async (c) => {
     return c.json({ error: 'Expected WebSocket upgrade' }, 426);
   }
 
-  // Authenticate before the upgrade completes
   const secret = c.req.query('secret');
   if (!validateWsSecret(secret, c.env.API_SECRET)) {
     return c.json({ error: 'Unauthorized' }, 401);
@@ -84,7 +83,7 @@ app.post('/sync/upload',        handleUpload);
 app.post('/sync/batchDownload', handleBatchDownload);
 app.post('/sync/delete',        handleDelete);
 
-// Semantic search (used by the Obsidian search panel, separate from chat agent)
+// Semantic search
 app.post('/search', handleSearch);
 
 // ── 404 fallthrough ───────────────────────────────────────────────────────────

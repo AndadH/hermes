@@ -1,6 +1,6 @@
 import { DurableObject } from 'cloudflare:workers';
-import type { Env, StoredMessage, WsIncoming } from './types';
-import { runAgentTurn } from './agent';
+import type { Env, StoredMessage, WsIncoming } from '../types';
+import { runAgentTurn } from '../agent/index';
 
 const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -108,13 +108,8 @@ export class ChatDO extends DurableObject<Env> {
     });
 
     // ── Close / error ─────────────────────────────────────────────────────────
-    server.addEventListener('close', () => {
-      stopRequested = true;
-    });
-
-    server.addEventListener('error', () => {
-      stopRequested = true;
-    });
+    server.addEventListener('close', () => { stopRequested = true; });
+    server.addEventListener('error', () => { stopRequested = true; });
 
     return new Response(null, { status: 101, webSocket: client });
   }

@@ -1,5 +1,5 @@
 import type { Context, Next } from 'hono';
-import type { Env } from './types';
+import type { Env } from '../types';
 
 /**
  * Bearer token middleware for all standard HTTP endpoints.

@@ -6,20 +6,27 @@ compatibility_flags = ["nodejs_compat"]
 [observability]
 enabled = true
 
-# ── Bindings ────────────────────────────────────────────────────────────────
+# ── Bindings ─────────────────────────────────────────────────────────────────
+
 [[d1_databases]]
 binding = "DB"
 database_name = "hermes-db"
-database_id = "07e903fb-13eb-4ef6-a3ea-1b255c33bb83"   # wrangler d1 create hermes-db
+database_id = "07e903fb-13eb-4ef6-a3ea-1b255c33bb83"
 
 [[r2_buckets]]
 binding = "VAULT"
-bucket_name = "vault"                       # wrangler r2 bucket create vault
+bucket_name = "vault"
 
 [ai]
 binding = "AI"
 
-# ── Durable Objects ──────────────────────────────────────────────────────────
+# Worker Loader — required for hermesKernel Code Mode sandbox
+# Closed beta: https://developers.cloudflare.com/workers/runtime-apis/bindings/worker-loader/
+[[worker_loaders]]
+binding = "LOADER"
+
+# ── Durable Objects ───────────────────────────────────────────────────────────
+
 [durable_objects]
 bindings = [{ name = "CHAT_DO", class_name = "ChatDO" }]
 
@@ -27,12 +34,20 @@ bindings = [{ name = "CHAT_DO", class_name = "ChatDO" }]
 tag = "v1"
 new_classes = ["ChatDO"]
 
-# ── Secrets (set with wrangler secret put) ───────────────────────────────────
-# API_SECRET   — shared bearer token for all endpoints
+# ── Secrets (set with wrangler secret put) ────────────────────────────────────
+# API_SECRET              — shared bearer token for all endpoints
+# GOOGLE_AI_KEY           — Gemini API key
+# TELEGRAM_BOT_TOKEN      — Telegram bot token
+# TELEGRAM_ALLOWED_USER_ID — your Telegram user ID
+# GOOGLE_CAL_CLIENT_EMAIL — service account email
+# GOOGLE_CAL_PRIVATE_KEY  — service account private key (PEM)
+# GOOGLE_CALENDAR_ID      — calendar ID to read/write
 #
 # Setup steps:
 #   1. wrangler d1 create hermes-db
-#   2. wrangler d1 execute hermes-db --file schema.sql
+#   2. wrangler d1 execute hermes-db --file schema.sql --remote
 #   3. wrangler r2 bucket create vault
 #   4. wrangler secret put API_SECRET
-#   5. wrangler deploy
+#   5. npm install @cloudflare/codemode
+#   6. wrangler types   ← regenerate after adding LOADER
+#   7. wrangler deploy
