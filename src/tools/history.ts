@@ -1,54 +1,103 @@
+// src/tools/history.ts — already has searchChatHistory; this adds getHistory
+// for structured lazy context pulling during autonomous turns.
+//
+// getHistory is intentionally different from searchChatHistory:
+//   searchChatHistory — FTS semantic search, returns best matches for a query
+//   getHistory        — structured fetch by source type, returns recent/specific content
+//
+// The model uses getHistory inside executeCode when it needs grounding context
+// that wasn't declared in the ContextSpec at scheduling time.
+
 import type { Env, AgentContext } from '../types';
 
-// ── Gemini function declaration ───────────────────────────────────────────────
+// ── Existing searchChatHistory (unchanged) ────────────────────────────────────
 
 export const historyDeclarations = [
   {
     name: 'searchChatHistory',
     description:
-      'Search past Telegram conversation history using full-text search. Use when the user references past conversations, previous topics, or things discussed days/weeks ago. Keep queries simple — 1-3 distinct keywords work best.',
+      'Full-text search across all past Telegram conversations. ' +
+      'Returns the most relevant messages for a given query. ' +
+      'Use when the user references something from days or weeks ago.',
     parameters: {
       type: 'OBJECT',
       properties: {
-        reasoning: { type: 'STRING', description: 'One sentence explaining why past chat history is relevant.' },
-        query: { type: 'STRING', description: '1-3 keywords to search for in past conversations.' },
+        query: { type: 'STRING', description: 'Keywords to search for. 1-3 words work best.' },
       },
-      required: ['reasoning', 'query'],
+      required: ['query'],
+    },
+  },
+  {
+    name: 'getHistory',
+    description:
+      'Fetch recent structured history by source type. ' +
+      'Use inside autonomous turns to pull context you need without pre-loading everything. ' +
+      'More targeted than searchChatHistory — retrieves recent entries rather than best FTS matches.',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        source: {
+          type: 'STRING',
+          description: '"telegram" — recent Telegram messages. More sources coming.',
+        },
+        limit: {
+          type: 'NUMBER',
+          description: 'Max number of entries to return. Default 10.',
+        },
+      },
+      required: ['source'],
     },
   },
 ];
 
-// ── Execute: searchChatHistory ────────────────────────────────────────────────
+// ── Executors ─────────────────────────────────────────────────────────────────
 
 export async function executeSearchChatHistory(
-  env: Env,
-  _ctx: AgentContext,
+  env:   Env,
+  _ctx:  AgentContext,
   query: string,
 ): Promise<unknown> {
-  try {
-    // FTS5 MATCH supports advanced syntax (AND, OR, NOT, prefix*).
-    // Clean the query to prevent SQL syntax errors from weird LLM formatting.
-    const cleanQuery = query.replace(/[^a-zA-Z0-9\s]/g, '').trim();
-    if (!cleanQuery) return { message: 'Search query was empty.' };
+  if (!query.trim()) return { results: [] };
 
-    const { results } = await env.DB.prepare(`
-      SELECT
-        t.role,
-        t.content,
-        datetime(t.timestamp / 1000, 'unixepoch') as date
+  const { results } = await env.DB
+    .prepare(`
+      SELECT t.role, t.content, t.timestamp
       FROM telegram_history t
-      JOIN telegram_history_fts fts ON t.id = fts.rowid
+      JOIN telegram_history_fts fts ON fts.rowid = t.id
       WHERE telegram_history_fts MATCH ?
       ORDER BY rank
       LIMIT 10
-    `).bind(cleanQuery).all<{ role: string; content: string; date: string }>();
+    `)
+    .bind(query)
+    .all<{ role: string; content: string; timestamp: number }>();
 
-    if (!results?.length) return { message: 'No past conversations found for that query.' };
+  return { results: results ?? [] };
+}
 
-    return { results };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error('[searchChatHistory] Error:', msg);
-    return { error: msg };
+export async function executeGetHistory(
+  args: Record<string, unknown>,
+  env:  Env,
+): Promise<unknown> {
+  const source = String(args.source ?? '');
+  const limit  = Math.min(Number(args.limit ?? 10), 50);
+
+  if (source === 'telegram') {
+    const { results } = await env.DB
+      .prepare(`
+        SELECT role, content, timestamp
+        FROM telegram_history
+        ORDER BY timestamp DESC
+        LIMIT ?
+      `)
+      .bind(limit)
+      .all<{ role: string; content: string; timestamp: number }>();
+
+    return {
+      source:   'telegram',
+      count:    results?.length ?? 0,
+      messages: (results ?? []).reverse(),
+    };
   }
+
+  return { error: 'Unknown source "' + source + '". Available: "telegram"' };
 }

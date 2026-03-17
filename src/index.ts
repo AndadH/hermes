@@ -12,9 +12,11 @@ import {
 } from './handlers/syncHandlers';
 import { handleSearch } from './handlers/searchHandlers';
 import { ChatDO } from './durable/chatDO';
+import { CallbackDO } from './durable/callbackDO';
+import { TimerDO } from './durable/timerDO';
 
 // Re-export the DO class so wrangler can register it
-export { ChatDO };
+export { ChatDO, CallbackDO, TimerDO };
 
 // ── App ───────────────────────────────────────────────────────────────────────
 

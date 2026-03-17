@@ -28,12 +28,22 @@ binding = "LOADER"
 # ── Durable Objects ───────────────────────────────────────────────────────────
 
 [durable_objects]
-bindings = [{ name = "CHAT_DO", class_name = "ChatDO" }]
-
+bindings = [
+  { name = "CHAT_DO",     class_name = "ChatDO"     },
+  { name = "TIMER_DO",    class_name = "TimerDO"    },
+  { name = "CALLBACK_DO", class_name = "CallbackDO" },
+]
+ 
 [[migrations]]
 tag = "v1"
 new_classes = ["ChatDO"]
+ 
+[[migrations]]
+tag = "v2"
+new_classes = ["TimerDO", "CallbackDO"]
 
+[vars]
+"TELEGRAM_CHAT_ID" = "8169753369"
 # ── Secrets (set with wrangler secret put) ────────────────────────────────────
 # API_SECRET              — shared bearer token for all endpoints
 # GOOGLE_AI_KEY           — Gemini API key

@@ -1,17 +1,13 @@
-import type { Env, AgentContext, StoredMessage } from '../types';
+// src/agent/index.ts
+import type { Env, AgentContext, StoredMessage, RecursionBudget } from '../types';
 import { createKernel } from './kernel';
 import { obsidianConfig } from './kernels/obsidian';
 import { telegramConfig } from './kernels/telegram';
-
-// ── Platform → kernel config map ─────────────────────────────────────────────
-// Add new surfaces here — each gets its own hot tools, round limit, and prompt.
 
 const KERNEL_CONFIGS = {
   websocket: obsidianConfig,
   telegram:  telegramConfig,
 } as const satisfies Record<AgentContext['platform'], import('./kernel').KernelConfig>;
-
-// ── runAgentTurn ──────────────────────────────────────────────────────────────
 
 export async function runAgentTurn(
   env:        Env,
@@ -25,28 +21,27 @@ export async function runAgentTurn(
     platform: 'websocket',
     metadata: { activeNote },
   };
-
-  const kernel = createKernel(KERNEL_CONFIGS[ctx.platform], env, ctx);
-  return kernel.runLoop(ws, isStopped);
+  return createKernel(KERNEL_CONFIGS.websocket, env, ctx).runLoop(ws, isStopped);
 }
 
-// ── runTelegramTurn ───────────────────────────────────────────────────────────
-// Separate entry point so telegramHandlers can set platform correctly
-// and pass chatId in metadata for future tool use.
-
+// budget is optional — present only for autonomous (timer/callback) turns.
+// It's injected into ctx.metadata so tools can read and forward it without
+// needing an extra function parameter.
 export async function runTelegramTurn(
   env:       Env,
   ws:        WebSocket,
   history:   StoredMessage[],
   chatId:    number,
   isStopped: () => boolean,
+  budget?:   RecursionBudget,
 ): Promise<string> {
   const ctx: AgentContext = {
     messages: history,
     platform: 'telegram',
-    metadata: { chatId },
+    metadata: {
+      chatId,
+      ...(budget ? { budget } : {}),
+    },
   };
-
-  const kernel = createKernel(KERNEL_CONFIGS[ctx.platform], env, ctx);
-  return kernel.runLoop(ws, isStopped);
+  return createKernel(KERNEL_CONFIGS.telegram, env, ctx).runLoop(ws, isStopped);
 }

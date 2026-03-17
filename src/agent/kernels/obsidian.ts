@@ -1,6 +1,7 @@
+// src/agent/kernels/obsidian.ts
 import type { AgentContext } from '../../types';
 import type { KernelConfig } from '../kernel';
-import { basePersona, vaultGuidelines, webGuidelines, calendarGuidelines, historyGuidelines, codeModeGuidelines } from './base';
+import { basePersona, coreGuidelines, calendarGuidelines } from './base';
 
 export const obsidianConfig: KernelConfig = {
   hotTools: ['searchVault', 'readNote', 'webSearch'],
@@ -11,23 +12,19 @@ export const obsidianConfig: KernelConfig = {
 
     const sections = [
       basePersona(),
-
-      `## Style
-- Use rich Markdown: headers, bullets, **bold**, *italic*, \`code\`, tables
-- Link vault notes as [[Note Title]] (no .md extension)
-- External URLs as [label](https://url)
-- Be concise — cut filler, preserve substance
-- Never output raw JSON or function call schemas
-- Do NOT add a # heading at the top of note content — Obsidian uses the filename as the title`,
-
-      vaultGuidelines,
-      webGuidelines,
-      historyGuidelines,
-      codeModeGuidelines,
+      '## Style\n' +
+      '- Rich Markdown: headers, bullets, **bold**, tables\n' +
+      '- Note links as [[Note Title]]\n' +
+      '- No # heading at top of note content — filename is the title\n' +
+      '- No raw JSON',
+      coreGuidelines,
     ];
 
     if (activeNote.trim()) {
-      sections.push(`<active_note>\n${activeNote.trim()}\n</active_note>\n\nThe user is currently viewing the note above. Use it as primary context.`);
+      sections.push(
+        '<active_note>\n' + activeNote.trim() + '\n</active_note>\n\n' +
+        'User is viewing this note. Use as primary context.',
+      );
     }
 
     return sections.join('\n\n');

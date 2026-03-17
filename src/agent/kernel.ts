@@ -1,26 +1,20 @@
-import { DynamicWorkerExecutor, generateTypesFromJsonSchema, normalizeCode } from '@cloudflare/codemode';
-import type { JsonSchemaToolDescriptors } from '@cloudflare/codemode';
+// src/agent/kernel.ts
+import { DynamicWorkerExecutor, normalizeCode } from '@cloudflare/codemode';
 import { buildToolRegistry } from '../tools/registry';
+import { buildToolSpec } from '../tools/spec';
 import { geminiCall, streamFinalAnswer, wsSend, toolLabel } from './gemini';
 import type { Env, AgentContext, SearchResult } from '../types';
 
 // ── KernelConfig ──────────────────────────────────────────────────────────────
 
 export interface KernelConfig {
-  /** Tool names always exposed as native Gemini declarations (no discovery needed). */
-  hotTools: string[];
-  /** Max tool-calling rounds before forcing the final answer stream. */
-  maxRounds: number;
-  /** Returns the full system prompt string for this platform + context. */
-  buildPrompt: (ctx: AgentContext) => string;
+  hotTools:     string[];
+  maxRounds:    number;
+  buildPrompt:  (ctx: AgentContext) => string;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/**
- * Gemini function_response.response must always be a Struct (plain object).
- * Never a string, number, or array at the top level — wrap if needed.
- */
 function toStruct(value: unknown): Record<string, unknown> {
   if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
     return value as Record<string, unknown>;
@@ -31,73 +25,95 @@ function toStruct(value: unknown): Record<string, unknown> {
 // ── createKernel ──────────────────────────────────────────────────────────────
 
 export function createKernel(config: KernelConfig, env: Env, ctx: AgentContext) {
-  const registry = buildToolRegistry(env, ctx);
-  const systemPrompt = config.buildPrompt(ctx);
+  const registry     = buildToolRegistry(env, ctx);
+  const spec         = buildToolSpec(registry);
 
-  // ── JSON Schema type generation for executeCode description ───────────────
-  const jsonSchemaTools: JsonSchemaToolDescriptors = Object.fromEntries(
-    Object.entries(registry).map(([name, t]) => {
-      const decl = t.geminiDeclaration as any;
-      const normalizeSchema = (schema: any): any => {
-        if (!schema || typeof schema !== 'object') return schema;
-        const out: any = {};
-        for (const [k, v] of Object.entries(schema)) {
-          if (k === 'type' && typeof v === 'string') {
-            out[k] = v.toLowerCase();
-          } else if (typeof v === 'object') {
-            out[k] = normalizeSchema(v);
-          } else {
-            out[k] = v;
-          }
-        }
-        return out;
-      };
-      return [name, {
-        description: t.description,
-        inputSchema: normalizeSchema(decl.parameters ?? { type: 'object', properties: {} }),
-      }];
-    }),
-  );
-  const generatedTypes = generateTypesFromJsonSchema(jsonSchemaTools);
+  // Auto-generate a hot-tools reference from registry data — no manual prompt maintenance.
+  // Format: "- toolName(requiredArgs): returns — description"
+  const hotToolsBlock = '## Hot tools (always available, call directly)\n' +
+    config.hotTools.map(name => {
+      const entry = spec[name];
+      if (!entry) return '';
+      const requiredArgs = Object.entries(entry.args)
+        .filter(([_, a]) => a.required)
+        .map(([k]) => k)
+        .join(', ');
+      return '- ' + name + '(' + requiredArgs + '): ' + entry.returns + ' — ' + entry.description;
+    }).filter(Boolean).join('\n');
+
+  const systemPrompt = config.buildPrompt(ctx) + '\n\n' + hotToolsBlock;
 
   // ── Sandbox executor ──────────────────────────────────────────────────────
   const executor = new DynamicWorkerExecutor({
-    loader: env.LOADER,
+    loader:  env.LOADER,
     timeout: 30_000,
   });
 
-  // All tools available inside the sandbox via codemode.toolName(args)
+  // Tool callables for executeCode — every registered tool
   const toolFns: Record<string, (...args: unknown[]) => Promise<unknown>> = Object.fromEntries(
     Object.entries(registry).map(([name, t]) => [
       name,
-      async (args: unknown) => t.execute(args as Record<string, unknown>, env, ctx),
+      (args: unknown) => t.execute(args as Record<string, unknown>, env, ctx),
     ]),
   );
 
-  const specFns: Record<string, (...args: unknown[]) => Promise<unknown>> = {
-    spec: async () =>
-      Object.fromEntries(
-        Object.entries(registry).map(([name, t]) => [name, { description: t.description }]),
-      ),
+  // spec() is available in BOTH sandboxes — returns the full HermesSpec
+  const specFn = async () => spec;
+
+  // discoverTools sandbox: only spec, no tool execution
+  const discoverFns: Record<string, (...args: unknown[]) => Promise<unknown>> = {
+    spec: specFn,
+  };
+
+  // executeCode sandbox: all tools + spec for inline reference
+  const execFns: Record<string, (...args: unknown[]) => Promise<unknown>> = {
+    ...toolFns,
+    spec: specFn,
   };
 
   // ── Function declarations ─────────────────────────────────────────────────
+
   const hotDeclarations = config.hotTools
     .map((name) => registry[name]?.geminiDeclaration)
     .filter((d): d is Record<string, unknown> => d != null);
 
   const codeModeDeclarations = [
     {
-      name: 'searchHermesAPI',
+      name: 'discoverTools',
       description:
-        'Discover available Hermes tools. Write a JS async arrow function. ' +
-        'Call `await codemode.spec()` to get a map of tool names → descriptions, then filter and return what you need.',
+        'Explore available Hermes tools by writing JavaScript against the tool spec. ' +
+        'Call `await codemode.spec()` to get the full spec, then traverse it to find what you need. ' +
+        'Use this before executeCode whenever you need to find a tool, check argument shapes, ' +
+        'or read a usage guide.\n\n' +
+        'The spec is a `Record<string, ToolSpecEntry>` where each entry has:\n' +
+        '  description: string         — what the tool does\n' +
+        '  tags: string[]              — semantic keywords for filtering\n' +
+        '  args: Record<string, { type, required, description }>\n' +
+        '  returns: string             — return value shape\n' +
+        '  skill?: string             — usage guide (present on complex tools)\n' +
+        '  examples?: string[]        — codemode call examples\n\n' +
+        'Example traversals:\n' +
+        '  // Find all async/timer tools\n' +
+        '  const spec = await codemode.spec();\n' +
+        '  return Object.entries(spec).filter(([_, t]) => t.tags.includes("async"));\n\n' +
+        '  // Get the full entry for a specific tool including its skill guide\n' +
+        '  const spec = await codemode.spec();\n' +
+        '  return spec.scheduleTimer;\n\n' +
+        '  // Find tools that return notes content (useful for chaining)\n' +
+        '  const spec = await codemode.spec();\n' +
+        '  return Object.entries(spec).filter(([_, t]) => t.returns.includes("content"));\n\n' +
+        '  // Check exact arg shapes before calling\n' +
+        '  const spec = await codemode.spec();\n' +
+        '  return spec.registerCallback.args;',
       parameters: {
         type: 'OBJECT',
         properties: {
           code: {
             type: 'STRING',
-            description: 'JavaScript async arrow function. Use `await codemode.spec()` to get the spec.',
+            description:
+              'JavaScript async arrow function body. ' +
+              'Call `await codemode.spec()` to get the spec, then use synchronous JS to traverse it. ' +
+              'Return whatever slice of the spec you need.',
           },
         },
         required: ['code'],
@@ -106,15 +122,20 @@ export function createKernel(config: KernelConfig, env: Env, ctx: AgentContext) 
     {
       name: 'executeCode',
       description:
-        'Execute JavaScript in a sandboxed Worker to chain multiple tool calls in one shot. ' +
-        'Call tools via `await codemode.toolName(args)`. Returns { success, data, logs }.\n\n' +
-        'Available tools and their TypeScript types:\n```ts\n' + generatedTypes + '\n```',
+        'Execute JavaScript in a sandboxed Worker. ' +
+        'Call any Hermes tool via `await codemode.toolName(args)`. ' +
+        'The full tool spec is also available via `await codemode.spec()` for inline reference. ' +
+        'Returns { success, data, logs }. ' +
+        'Use discoverTools first if you need to find a tool or check its argument shape.',
       parameters: {
         type: 'OBJECT',
         properties: {
           code: {
             type: 'STRING',
-            description: 'JavaScript async arrow function. Call tools via `await codemode.toolName(args)`.',
+            description:
+              'JavaScript async arrow function body. ' +
+              'Call tools via `await codemode.toolName(args)`. ' +
+              'Optionally call `await codemode.spec()` to inspect tool shapes inline.',
           },
         },
         required: ['code'],
@@ -124,42 +145,62 @@ export function createKernel(config: KernelConfig, env: Env, ctx: AgentContext) 
 
   const functionDeclarations = [...hotDeclarations, ...codeModeDeclarations];
 
-  // The set of tool names the model is actually allowed to call directly.
-  // Anything outside this is a hallucination — return a clear error.
   const declaredTools = new Set([
     ...config.hotTools,
-    'searchHermesAPI',
+    'discoverTools',
     'executeCode',
   ]);
 
   // ── Dispatch ──────────────────────────────────────────────────────────────
 
   async function dispatch(name: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
-    // Reject hallucinated tool names not actually declared to the model
     if (!declaredTools.has(name)) {
       return {
-        error: `Tool "${name}" is not available as a direct call. Use executeCode with codemode.${name}() instead.`,
+        error: `"${name}" is not a direct tool. Use executeCode with codemode.${name}() instead.`,
       };
     }
 
-    if (name === 'searchHermesAPI') {
-      // normalizeCode handles top-level const/let, various function formats, markdown fences
+    if (name === 'discoverTools') {
       const safe = normalizeCode(String(args.code ?? ''));
-      const { result, error, logs } = await executor.execute(safe, specFns);
-      if (error) return { error: `Search failed: ${error}`, logs: logs ?? [] };
+      const { result, error, logs } = await executor.execute(safe, discoverFns);
+      if (error) return { error: `discoverTools failed: ${error}`, logs: logs ?? [] };
       return toStruct(result);
     }
 
     if (name === 'executeCode') {
-      const safe = normalizeCode(String(args.code ?? ''));
-      const { result, error, logs } = await executor.execute(safe, toolFns);
-      if (error) return { error, logs: logs ?? [] };
+      const code = String(args.code ?? '');
+      const safe = normalizeCode(code);
+
+      const { result, error, logs } = await executor.execute(safe, execFns);
+      if (error) {
+        // Extract codemode.toolName() calls and attach their spec entries
+        const calledTools = [...code.matchAll(/codemode\.(\w+)\s*\(/g)]
+          .map(m => m[1])
+          .filter(n => n !== 'spec');
+        const unique = [...new Set(calledTools)];
+        const specHints: Record<string, unknown> = {};
+        for (const toolName of unique) {
+          if (spec[toolName]) {
+            specHints[toolName] = {
+              args:    spec[toolName].args,
+              returns: spec[toolName].returns,
+              ...(spec[toolName].skill ? { skill: spec[toolName].skill } : {}),
+            };
+          }
+        }
+        return {
+          error,
+          logs:  logs ?? [],
+          hint:  'Use discoverTools to verify arg shapes, then retry with corrected code.',
+          ...(unique.length > 0 ? { toolSpec: specHints } : {}),
+        };
+      }
       return { success: true, data: result ?? null, logs: logs ?? [] };
     }
 
+    // Hot tool direct dispatch
     const tool = registry[name];
     if (!tool) return { error: `Unknown tool: "${name}"` };
-
     const result = await tool.execute(args, env, ctx);
     return toStruct(result);
   }
@@ -168,20 +209,21 @@ export function createKernel(config: KernelConfig, env: Env, ctx: AgentContext) 
 
   async function runLoop(ws: WebSocket, isStopped: () => boolean): Promise<string> {
     const contents: unknown[] = ctx.messages.map((m) => ({
-      role: m.role === 'assistant' ? 'model' : 'user',
+      role:  m.role === 'assistant' ? 'model' : 'user',
       parts: [{ text: m.content }],
     }));
+
+    let consecutiveDiscover = 0;
 
     for (let round = 0; round < config.maxRounds; round++) {
       if (isStopped()) { wsSend(ws, { type: 'done' }); return ''; }
 
-      const data: any = await geminiCall(env, systemPrompt, contents, functionDeclarations);
+      const data: any  = await geminiCall(env, systemPrompt, contents, functionDeclarations);
       const parts: any[] = data?.candidates?.[0]?.content?.parts ?? [];
-      const fnParts = parts.filter((p: any) => p.functionCall != null);
+      const fnParts      = parts.filter((p: any) => p.functionCall != null);
 
       if (!fnParts.length) break;
 
-      // Strip thought parts before adding to history (prevents truncated responses)
       const historyParts = parts.filter((p: any) => !p.thought);
       (contents as any[]).push({ role: 'model', parts: historyParts });
 
@@ -191,7 +233,6 @@ export function createKernel(config: KernelConfig, env: Env, ctx: AgentContext) 
         if (isStopped()) break;
 
         const { name, args } = part.functionCall;
-
         wsSend(ws, { type: 'toolCall', name, args, label: toolLabel(name, args), reasoning: null });
 
         let resultData: Record<string, unknown>;
@@ -199,39 +240,52 @@ export function createKernel(config: KernelConfig, env: Env, ctx: AgentContext) 
           resultData = await dispatch(name, args ?? {});
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          console.error(`[kernel] Tool "${name}" threw:`, msg);
+          console.error('[kernel] Tool "' + name + '" threw:', msg);
           resultData = { error: msg };
         }
 
-        // Emit syncRequired for any successful vault write
         const tool = registry[name];
         if (tool?.sideEffect && resultData?.success) {
           wsSend(ws, { type: 'syncRequired' });
         }
 
-        // Surface search results to the UI if present
         const rawResults = (resultData?.results ?? (resultData?.data as any)?.results) as any[] | undefined;
         const searchResults: SearchResult[] = rawResults?.map?.((r: any) => ({
           filename: r.filename ?? r.title ?? '',
-          score: r.score ?? 1,
-          link: r.link ?? r.url ?? '',
-          excerpt: r.excerpt ?? r.snippet ?? '',
+          score:    r.score ?? 1,
+          link:     r.link ?? r.url ?? '',
+          excerpt:  r.excerpt ?? r.snippet ?? '',
         })) ?? [];
 
         wsSend(ws, { type: 'toolResult', name, args, results: searchResults });
-
-        // response must always be a Struct — guaranteed by dispatch return type
         functionResponses.push({ functionResponse: { name, response: resultData } });
       }
 
       if (functionResponses.length) {
         (contents as any[]).push({ role: 'user', parts: functionResponses });
       }
+
+      // Guard: if every call this round was discoverTools, increment counter.
+      // Two consecutive all-discover rounds means the model is stuck — nudge it.
+      const allDiscover = fnParts.every((p: any) => p.functionCall?.name === 'discoverTools');
+      if (allDiscover) {
+        consecutiveDiscover++;
+        if (consecutiveDiscover >= 2) {
+          console.warn('[kernel] discoverTools loop detected — injecting nudge');
+          (contents as any[]).push({
+            role:  'user',
+            parts: [{ text: '[SYSTEM] Call executeCode now or respond directly.' }],
+          });
+          consecutiveDiscover = 0;
+        }
+      } else {
+        consecutiveDiscover = 0;
+      }
     }
 
     if (isStopped()) { wsSend(ws, { type: 'done' }); return ''; }
 
-    const finalText = await streamFinalAnswer(env, systemPrompt, contents, ws, isStopped);
+    const finalText = await streamFinalAnswer(env, systemPrompt, contents, ws, isStopped, functionDeclarations);
     wsSend(ws, { type: 'done' });
     return finalText;
   }
