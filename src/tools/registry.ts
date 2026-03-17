@@ -47,6 +47,8 @@ import {
   executeWriteMemory,
 } from './daily';
 
+import { mathDeclarations, executeNewtonMath, executeWolframAlpha } from './math';
+
 // ── ToolDef ───────────────────────────────────────────────────────────────────
 
 export interface ToolDef {
@@ -361,6 +363,61 @@ export function buildToolRegistry(env: Env, ctx: AgentContext): Record<string, T
       returns: '{ ok: boolean, date: string, path: string, entry: string }',
       sideEffect: true,
       execute: async (args) => executeWriteMemory(args, env, ctx),
+    },
+    // ── Math ──────────────────────────────────────────────────────────────────────
+ 
+    newtonMath: {
+      description: mathDeclarations.find(d => d.name === 'newtonMath')!.description,
+      geminiDeclaration: mathDeclarations.find(d => d.name === 'newtonMath')!,
+      tags: [
+        'math', 'symbolic', 'algebra', 'calculus', 'derivative', 'integral',
+        'factor', 'simplify', 'zeroes', 'roots', 'tangent', 'area', 'trig',
+        'trigonometry', 'sin', 'cos', 'tan', 'arcsin', 'arccos', 'arctan',
+        'log', 'abs', 'newton', 'symbolic-math',
+      ],
+      returns: '{ operation: string, expression: string, result: string } | { error: string }',
+      skill: [
+        'newtonMath wraps the Newton micro-service for symbolic math.',
+        '',
+        'Operations: simplify | factor | derive | integrate | zeroes | tangent | area |',
+        '            cos | sin | tan | arccos | arcsin | arctan | abs | log',
+        '',
+        'Expression syntax:',
+        '  - Use ^ for exponents:               x^2+2x',
+        '  - Use (over) for fractions:          1(over)2',
+        '  - Tangent line at x=c:               c|f(x)  →  e.g. "2|x^3"',
+        '  - Area under curve from c to d:      c:d|f(x) → e.g. "2:4|x^3"',
+        '',
+        'Use executeCode for pure numeric calculations.',
+        'Use wolframAlpha for anything Newton cannot handle (ODEs, series, etc.).',
+      ].join('\n'),
+      examples: [
+        'await codemode.newtonMath({ operation: "derive", expression: "x^3+2x" })',
+        'await codemode.newtonMath({ operation: "integrate", expression: "x^2+2x" })',
+        'await codemode.newtonMath({ operation: "tangent", expression: "2|x^3" })',
+        'await codemode.newtonMath({ operation: "area", expression: "2:4|x^3" })',
+        'await codemode.newtonMath({ operation: "factor", expression: "x^2+2x" })',
+      ],
+      execute: async (args) => executeNewtonMath(args),
+    },
+ 
+    wolframAlpha: {
+      description: mathDeclarations.find(d => d.name === 'wolframAlpha')!.description,
+      geminiDeclaration: mathDeclarations.find(d => d.name === 'wolframAlpha')!,
+      tags: [
+        'math', 'advanced', 'wolfram', 'ode', 'differential-equation', 'series',
+        'laplace', 'fourier', 'transform', 'number-theory', 'prime', 'matrix',
+        'eigenvalue', 'statistics', 'distribution', 'unit-conversion', 'physics',
+        'constants', 'science', 'natural-language', 'cas', 'computer-algebra',
+      ],
+      returns: '{ query: string, answer: string } | { error: string }',
+      examples: [
+        'await codemode.wolframAlpha({ query: "integrate sin(x^2) dx from 0 to 1" })',
+        'await codemode.wolframAlpha({ query: "eigenvalues of [[1,2],[3,4]]" })',
+        `await codemode.wolframAlpha({ query: "solve y'' + y = 0" })`,
+        'await codemode.wolframAlpha({ query: "1000 USD in JPY" })',
+      ],
+      execute: async (args, env) => executeWolframAlpha(args, env),
     },
   };
 }

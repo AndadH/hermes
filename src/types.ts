@@ -24,6 +24,7 @@ export interface Env {
   GOOGLE_CAL_CLIENT_EMAIL:  string;
   GOOGLE_CAL_PRIVATE_KEY:   string;
   GOOGLE_CALENDAR_ID:       string;
+  WOLFRAM_APP_ID:           string;
 
   // Optional vars
   ENVIRONMENT?: string;
