@@ -18,6 +18,8 @@ import {
   calendarDeclarations,
   executeGetCalendarEvents,
   executeCreateCalendarEvent,
+  executeDeleteCalendarEvent,
+  executeUpdateCalendarEvent,
 } from './calendar';
 
 import { historyDeclarations, executeSearchChatHistory, executeGetHistory } from './history';
@@ -38,6 +40,12 @@ import {
 } from './callbacks';
 
 import { telegramDeclarations, executeSendTelegramMessage } from './telegram';
+
+import {
+  dailyDeclarations,
+  executeReadMemory,
+  executeWriteMemory,
+} from './daily';
 
 // ── ToolDef ───────────────────────────────────────────────────────────────────
 
@@ -163,7 +171,7 @@ export function buildToolRegistry(env: Env, ctx: AgentContext): Record<string, T
     webSearch: {
       description: webDeclarations.find(d => d.name === 'webSearch')!.description,
       geminiDeclaration: webDeclarations.find(d => d.name === 'webSearch')!,
-      tags:    ['web', 'search', 'internet', 'current', 'news', 'online', 'tavily', 'external', 'lookup'],
+      tags:    ['web', 'search', 'internet', 'current', 'news', 'online', 'duckduckgo', 'external', 'lookup'],
       returns: '{ results: { title: string, url: string, snippet: string }[] }',
       execute: async (args) => {
         const results = await executeWebSearch(env, String(args.query ?? ''));
@@ -208,6 +216,30 @@ export function buildToolRegistry(env: Env, ctx: AgentContext): Record<string, T
           description: args.description ? String(args.description) : undefined,
         });
       },
+    },
+
+    deleteCalendarEvent: {
+      description: calendarDeclarations.find(d => d.name === 'deleteCalendarEvent')!.description,
+      geminiDeclaration: calendarDeclarations.find(d => d.name === 'deleteCalendarEvent')!,
+      tags:    ['calendar', 'delete', 'remove', 'cancel', 'event'],
+      returns: '{ success: boolean, eventId?: string } | { error: string }',
+      sideEffect: true,
+      execute: async (args) => executeDeleteCalendarEvent(env, ctx, { eventId: String(args.eventId ?? '') }),
+    },
+
+    updateCalendarEvent: {
+      description: calendarDeclarations.find(d => d.name === 'updateCalendarEvent')!.description,
+      geminiDeclaration: calendarDeclarations.find(d => d.name === 'updateCalendarEvent')!,
+      tags:    ['calendar', 'update', 'edit', 'reschedule', 'change', 'event'],
+      returns: '{ success: boolean, eventId: string, updated: string[] } | { error: string }',
+      sideEffect: true,
+      execute: async (args) => executeUpdateCalendarEvent(env, ctx, {
+        eventId:     String(args.eventId ?? ''),
+        summary:     args.summary     ? String(args.summary)     : undefined,
+        startTime:   args.startTime   ? String(args.startTime)   : undefined,
+        endTime:     args.endTime     ? String(args.endTime)      : undefined,
+        description: args.description ? String(args.description) : undefined,
+      }),
     },
 
     // ── History ──────────────────────────────────────────────────────────────
@@ -310,6 +342,25 @@ export function buildToolRegistry(env: Env, ctx: AgentContext): Record<string, T
       tags:    ['telegram', 'message', 'send', 'notify', 'proactive', 'dm', 'chat', 'reply'],
       returns: '{ ok: boolean, messageId: number } | { error: string }',
       execute: async (args) => executeSendTelegramMessage(args, env, ctx),
+    },
+
+    // ── Memory ────────────────────────────────────────────────────────────────
+
+    readMemory: {
+      description: dailyDeclarations.find(d => d.name === 'readMemory')!.description,
+      geminiDeclaration: dailyDeclarations.find(d => d.name === 'readMemory')!,
+      tags:    ['memory', 'today', 'log', 'recall', 'context', 'daily', 'journal', 'read', 'what happened'],
+      returns: '{ date: string, path: string, exists: boolean, content: string | null }',
+      execute: async (args) => executeReadMemory(args, env, ctx),
+    },
+
+    writeMemory: {
+      description: dailyDeclarations.find(d => d.name === 'writeMemory')!.description,
+      geminiDeclaration: dailyDeclarations.find(d => d.name === 'writeMemory')!,
+      tags:    ['memory', 'log', 'record', 'remember', 'note', 'observe', 'follow-up', 'write'],
+      returns: '{ ok: boolean, date: string, path: string, entry: string }',
+      sideEffect: true,
+      execute: async (args) => executeWriteMemory(args, env, ctx),
     },
   };
 }
