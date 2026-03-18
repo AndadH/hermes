@@ -17,6 +17,22 @@
 //   __index     — category map: { [category]: { description, tools: string[] } }
 //                 Read this first in discoverTools to find the right neighborhood,
 //                 then read only the tools in that bucket.
+//
+// ── Category structure ────────────────────────────────────────────────────────
+//
+//   vault         — shared collaborative workspace: notes and docs authored by
+//                   Andrew or Hermes, both read and write freely
+//
+//   memory        — everything Hermes accumulates through operation:
+//                   entities (people, orgs, projects + relationships),
+//                   daily observation log, and conversation history
+//
+//   web           — live internet search and page fetching
+//   research      — authoritative external data sources (no hallucination risk)
+//   math          — symbolic algebra, calculus, CAS
+//   calendar      — Google Calendar
+//   async         — timers, scheduled code, event callbacks
+//   communication — send Telegram messages
 
 import type { ToolDef } from './registry';
 
@@ -51,15 +67,13 @@ export type HermesSpec = Record<string, ToolSpecEntry> & {
 // ── Category descriptions — shown in __index ──────────────────────────────────
 
 const CATEGORY_DESCRIPTIONS: Record<string, string> = {
-  vault:         'Read and write Obsidian notes and vault files',
-  web:           'Live internet search and full page fetching',
-  research:      'Authoritative structured data: academic papers, encyclopedias, economic data',
+  vault:         'Shared collaborative workspace — notes and docs authored by Andrew or Hermes; both read and write here freely',
+  memory:        'People, contacts, organizations, projects, tasks, observations, chat history, phonebook, relationships, anything Hermes has tracked or been told. Check here when a name, person, company, or project is mentioned.',
+  research:      'External information retrieval — use authoritative sources first (openAlex, arxiv, wikipedia, fred, worldBank), webSearch and fetchPage as fallback when nothing else fits',
   math:          'Symbolic algebra, calculus, and advanced computer algebra system',
   calendar:      'Google Calendar read and write',
-  async:         'Schedule future agent turns, code execution, and event-triggered callbacks',
-  memory:        'Daily journal log — read and write persistent observations',
+  async:         'Schedule future agent turns, deterministic code execution, and event-triggered callbacks',
   communication: 'Send proactive Telegram messages',
-  history:       'Search across past conversation history',
 };
 
 // ── Builder ───────────────────────────────────────────────────────────────────

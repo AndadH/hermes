@@ -113,6 +113,9 @@ export async function executeSearchVault(
       query,
       max_num_results: 5,
       rewrite_query: true,
+      ranking_options: {
+        score_threshold: 0.45,
+      },
     });
 
     if (!response?.data || !Array.isArray(response.data)) return [];

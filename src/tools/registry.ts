@@ -62,6 +62,20 @@ import {
   executeWorldBank,
 } from './research';
 
+import {
+  entityDeclarations,
+  executeFindEntities,
+  executeGetEntity,
+  executeCreateEntity,
+  executeUpdateEntity,
+  executeAppendEntityNote,
+  executeDeleteEntity,
+  executeLinkEntities,
+  executeGetRelations,
+  executeDefineSchema,
+  executeGetSchema,
+} from './entities';
+
 // ── ToolDef ───────────────────────────────────────────────────────────────────
 
 export interface ToolDef {
@@ -135,6 +149,7 @@ export function buildToolRegistry(env: Env, ctx: AgentContext): Record<string, T
   return {
 
     // ── Vault ─────────────────────────────────────────────────────────────────
+    // Shared collaborative workspace — both Andrew and Hermes read and write here.
 
     searchVault: {
       description:       vaultDeclarations.find(d => d.name === 'searchVault')!.description,
@@ -170,7 +185,7 @@ export function buildToolRegistry(env: Env, ctx: AgentContext): Record<string, T
       description:       vaultDeclarations.find(d => d.name === 'createNote')!.description,
       geminiDeclaration: vaultDeclarations.find(d => d.name === 'createNote')!,
       category:  'vault',
-      tags:      ['vault', 'create', 'write', 'new', 'note', 'add'],
+      tags:      ['vault', 'create', 'write', 'new', 'note', 'add', 'document', 'doc'],
       returns:   '{ success: boolean } | { error: string }',
       sideEffect: true,
       execute: async (args) => executeCreateNote(env, ctx, String(args.path ?? ''), String(args.content ?? '')),
@@ -206,17 +221,211 @@ export function buildToolRegistry(env: Env, ctx: AgentContext): Record<string, T
       execute: async (args) => executeDeleteNote(env, ctx, String(args.path ?? '')),
     },
 
-    // ── Web ───────────────────────────────────────────────────────────────────
+    // ── Memory ────────────────────────────────────────────────────────────────
+    // Everything Hermes accumulates — entities, observations, conversation history.
+    // history tools (searchChatHistory, getHistory) also live here.
+
+    findEntities: {
+      description:       entityDeclarations.find(d => d.name === 'findEntities')!.description,
+      geminiDeclaration: entityDeclarations.find(d => d.name === 'findEntities')!,
+      category: 'memory',
+      tags:     [
+        // entity types
+        'memory', 'entities', 'contacts', 'people', 'person', 'someone', 'anyone',
+        'organization', 'company', 'project', 'team', 'group', 'vendor', 'client',
+        // relationship language
+        'phonebook', 'directory', 'roster', 'crm', 'relationships', 'network',
+        'colleague', 'coworker', 'friend', 'partner', 'lead', 'stakeholder',
+        // query patterns
+        'who', 'know', 'about', 'remember', 'recall', 'find', 'search', 'lookup',
+        'stored', 'tracked', 'recorded', 'registered', 'saved', 'logged',
+        // action patterns
+        'tell me about', 'do i know', 'is there', 'do we have', 'show me', 'list', 'get',
+        // professional context
+        'engineer', 'researcher', 'manager', 'founder', 'investor', 'advisor',
+        'employee', 'contractor', 'customer', 'supplier', 'associate',
+      ],
+      returns:  '{ total: number, results: { id, type, name, tags, updated_at, excerpt }[] }',
+      note:     'Check this whenever a person, organization, or project is mentioned by name — ' +
+                'may surface context already accumulated. Also call before createEntity to avoid duplicates.',
+      examples: [
+        'await codemode.findEntities({ query: "Sarah Acme", type: "contact" })',
+        'await codemode.findEntities({ query: "infrastructure EU", limit: 5 })',
+        'await codemode.findEntities({ query: "active", type: "project" })',
+      ],
+      execute: async (args, env) => executeFindEntities(args, env),
+    },
+
+    getEntity: {
+      description:       entityDeclarations.find(d => d.name === 'getEntity')!.description,
+      geminiDeclaration: entityDeclarations.find(d => d.name === 'getEntity')!,
+      category: 'memory',
+      tags:     ['memory', 'entities', 'get', 'read', 'full', 'detail', 'record'],
+      returns:  '{ id, type, name, tags, notes, data, created_at, updated_at }',
+      examples: [
+        'await codemode.getEntity({ id: "uuid-here" })',
+      ],
+      execute: async (args, env) => executeGetEntity(args, env),
+    },
+
+    createEntity: {
+      description:       entityDeclarations.find(d => d.name === 'createEntity')!.description,
+      geminiDeclaration: entityDeclarations.find(d => d.name === 'createEntity')!,
+      category:  'memory',
+      tags:      ['memory', 'entities', 'create', 'add', 'new', 'contact', 'project', 'book', 'record'],
+      returns:   '{ ok: boolean, id: string, type: string, name: string }',
+      sideEffect: true,
+      examples: [
+        'await codemode.createEntity({ type: "contact", name: "Sarah Chen", data: JSON.stringify({ email: "sarah@acme.com", organization: "Acme", role: "VP Engineering" }), note: "Met at Denver tech meetup" })',
+        'await codemode.createEntity({ type: "project", name: "EU Expansion", tags: "active,q2", data: JSON.stringify({ status: "active", deadline: "2025-06-01" }) })',
+      ],
+      execute: async (args, env) => executeCreateEntity(args, env),
+    },
+
+    updateEntity: {
+      description:       entityDeclarations.find(d => d.name === 'updateEntity')!.description,
+      geminiDeclaration: entityDeclarations.find(d => d.name === 'updateEntity')!,
+      category:  'memory',
+      tags:      ['memory', 'entities', 'update', 'edit', 'patch', 'change'],
+      returns:   '{ ok: boolean, id: string, updated: string[] }',
+      sideEffect: true,
+      examples: [
+        'await codemode.updateEntity({ id: "uuid", data: JSON.stringify({ role: "CTO" }) })',
+        'await codemode.updateEntity({ id: "uuid", name: "Sarah Chen-Williams", tags: "vip,investor" })',
+      ],
+      execute: async (args, env) => executeUpdateEntity(args, env),
+    },
+
+    appendEntityNote: {
+      description:       entityDeclarations.find(d => d.name === 'appendEntityNote')!.description,
+      geminiDeclaration: entityDeclarations.find(d => d.name === 'appendEntityNote')!,
+      category:  'memory',
+      tags:      ['memory', 'entities', 'note', 'append', 'log', 'observe', 'remember', 'context'],
+      returns:   '{ ok: boolean, id: string, entry: string }',
+      sideEffect: true,
+      note:      'Prefer this over updateEntity for adding observations — never overwrites, ' +
+                 'always appends with a timestamp. This is what makes the store grow over time.',
+      examples: [
+        'await codemode.appendEntityNote({ id: "uuid", note: "Mentioned EU expansion plans during vendor discussion" })',
+        'await codemode.appendEntityNote({ id: "uuid", note: "Introduced me to James on their infrastructure team" })',
+      ],
+      execute: async (args, env) => executeAppendEntityNote(args, env),
+    },
+
+    deleteEntity: {
+      description:       entityDeclarations.find(d => d.name === 'deleteEntity')!.description,
+      geminiDeclaration: entityDeclarations.find(d => d.name === 'deleteEntity')!,
+      category:  'memory',
+      tags:      ['memory', 'entities', 'delete', 'remove', 'destroy'],
+      returns:   '{ ok: boolean, id: string, deleted: boolean }',
+      sideEffect: true,
+      execute: async (args, env) => executeDeleteEntity(args, env),
+    },
+
+    linkEntities: {
+      description:       entityDeclarations.find(d => d.name === 'linkEntities')!.description,
+      geminiDeclaration: entityDeclarations.find(d => d.name === 'linkEntities')!,
+      category:  'memory',
+      tags:      ['memory', 'entities', 'link', 'relate', 'relationship', 'edge', 'graph', 'connect'],
+      returns:   '{ ok: boolean, id: string, from, relation, to }',
+      sideEffect: true,
+      examples: [
+        'await codemode.linkEntities({ from_id: "sarah-uuid", to_id: "acme-uuid", relation: "works_at", notes: "VP Engineering since 2023" })',
+        'await codemode.linkEntities({ from_id: "sarah-uuid", to_id: "project-uuid", relation: "involved_in" })',
+      ],
+      execute: async (args, env) => executeLinkEntities(args, env),
+    },
+
+    getRelations: {
+      description:       entityDeclarations.find(d => d.name === 'getRelations')!.description,
+      geminiDeclaration: entityDeclarations.find(d => d.name === 'getRelations')!,
+      category: 'memory',
+      tags:     ['memory', 'entities', 'relations', 'edges', 'graph', 'connections', 'links', 'network'],
+      returns:  '{ id, outgoing: [...], incoming: [...] }',
+      examples: [
+        'await codemode.getRelations({ id: "sarah-uuid" })',
+        'await codemode.getRelations({ id: "acme-uuid", direction: "in", relation: "works_at" })',
+      ],
+      execute: async (args, env) => executeGetRelations(args, env),
+    },
+
+    defineSchema: {
+      description:       entityDeclarations.find(d => d.name === 'defineSchema')!.description,
+      geminiDeclaration: entityDeclarations.find(d => d.name === 'defineSchema')!,
+      category:  'memory',
+      tags:      ['memory', 'entities', 'schema', 'type', 'define', 'template', 'fields'],
+      returns:   '{ ok: boolean, type: string, display_name: string }',
+      sideEffect: true,
+      examples: [
+        `await codemode.defineSchema({ type: "vendor", display_name: "Vendor", description: "A supplier or service provider", fields: JSON.stringify([{ key: "website", type: "string", label: "Website", indexed: false }, { key: "contract_end", type: "date", label: "Contract End", indexed: true }]) })`,
+      ],
+      execute: async (args, env) => executeDefineSchema(args, env),
+    },
+
+    getSchema: {
+      description:       entityDeclarations.find(d => d.name === 'getSchema')!.description,
+      geminiDeclaration: entityDeclarations.find(d => d.name === 'getSchema')!,
+      category: 'memory',
+      tags:     ['memory', 'entities', 'schema', 'type', 'fields', 'template', 'list'],
+      returns:  '{ type, display_name, description, fields[] } | { types[] }',
+      note:     'Always call this before createEntity to know what data fields to populate for a given type.',
+      examples: [
+        'await codemode.getSchema({ type: "contact" })',
+        'await codemode.getSchema({})  // list all available types',
+      ],
+      execute: async (args, env) => executeGetSchema(args, env),
+    },
+
+    readMemory: {
+      description:       dailyDeclarations.find(d => d.name === 'readMemory')!.description,
+      geminiDeclaration: dailyDeclarations.find(d => d.name === 'readMemory')!,
+      category: 'memory',
+      tags:     ['memory', 'today', 'log', 'recall', 'context', 'daily', 'journal', 'read', 'what happened'],
+      returns:  '{ date: string, path: string, exists: boolean, content: string | null }',
+      execute: async (args) => executeReadMemory(args, env, ctx),
+    },
+
+    writeMemory: {
+      description:       dailyDeclarations.find(d => d.name === 'writeMemory')!.description,
+      geminiDeclaration: dailyDeclarations.find(d => d.name === 'writeMemory')!,
+      category:  'memory',
+      tags:      ['memory', 'log', 'record', 'remember', 'note', 'observe', 'follow-up', 'write'],
+      returns:   '{ ok: boolean, date: string, path: string, entry: string }',
+      sideEffect: true,
+      execute: async (args) => executeWriteMemory(args, env, ctx),
+    },
+
+    searchChatHistory: {
+      description:       historyDeclarations.find(d => d.name === 'searchChatHistory')!.description,
+      geminiDeclaration: historyDeclarations.find(d => d.name === 'searchChatHistory')!,
+      category: 'memory',
+      tags:     ['memory', 'history', 'chat', 'past', 'search', 'previous', 'conversation', 'messages', 'recall'],
+      returns:  '{ results: { role: string, content: string, timestamp: number }[] }',
+      execute: async (args) => executeSearchChatHistory(env, ctx, String(args.query ?? '')),
+    },
+
+    getHistory: {
+      description:       historyDeclarations.find(d => d.name === 'getHistory')!.description,
+      geminiDeclaration: historyDeclarations.find(d => d.name === 'getHistory')!,
+      category: 'memory',
+      tags:     ['memory', 'history', 'recent', 'telegram', 'messages', 'context', 'autonomous', 'fetch'],
+      returns:  '{ results: { role: string, content: string, timestamp: number }[] }',
+      execute: async (args) => executeGetHistory(args, env),
+    },
+
+    // ── Research (including web fallback) ─────────────────────────────────────
+    // Authoritative sources first. webSearch and fetchPage are the fallback
+    // when no structured source covers the query.
 
     webSearch: {
       description:       webDeclarations.find(d => d.name === 'webSearch')!.description,
       geminiDeclaration: webDeclarations.find(d => d.name === 'webSearch')!,
-      category: 'web',
-      tags:     ['web', 'search', 'internet', 'current', 'news', 'online', 'external', 'lookup'],
+      category: 'research',
+      tags:     ['web', 'search', 'internet', 'current', 'news', 'online', 'external', 'lookup', 'fallback'],
       returns:  '{ results: { title: string, url: string, snippet: string }[] }',
-      note:     'Use for current events, news, and general lookups with no dedicated tool. ' +
-                'Prefer research tools (openAlex, wikipedia, fred, worldBank) for structured data, ' +
-                'and math tools (newtonMath, wolframAlpha) for computation.',
+      note:     'Fallback — use only when no authoritative tool covers the query. ' +
+                'Prefer openAlex/arxiv for papers, wikipedia for facts, fred/worldBank for data, ' +
+                'and math tools for computation.',
       execute: async (args) => {
         const results = await executeWebSearch(env, String(args.query ?? ''));
         return { results };
@@ -226,9 +435,11 @@ export function buildToolRegistry(env: Env, ctx: AgentContext): Record<string, T
     fetchPage: {
       description:       webDeclarations.find(d => d.name === 'fetchPage')!.description,
       geminiDeclaration: webDeclarations.find(d => d.name === 'fetchPage')!,
-      category: 'web',
-      tags:     ['web', 'fetch', 'read', 'url', 'page', 'scrape', 'content', 'full-text'],
+      category: 'research',
+      tags:     ['web', 'fetch', 'read', 'url', 'page', 'scrape', 'content', 'full-text', 'fallback'],
       returns:  '{ content: string } | { error: string }',
+      note:     'Use after webSearch to read a full page, or to fetch a specific URL. ' +
+                'Prefer structured research tools over webSearch + fetchPage when possible.',
       execute: async (args) => executeFetchPage(ctx, String(args.url ?? '')),
     },
 
@@ -291,27 +502,7 @@ export function buildToolRegistry(env: Env, ctx: AgentContext): Record<string, T
       }),
     },
 
-    // ── History ───────────────────────────────────────────────────────────────
-
-    searchChatHistory: {
-      description:       historyDeclarations.find(d => d.name === 'searchChatHistory')!.description,
-      geminiDeclaration: historyDeclarations.find(d => d.name === 'searchChatHistory')!,
-      category: 'history',
-      tags:     ['history', 'chat', 'past', 'search', 'previous', 'conversation', 'messages', 'recall'],
-      returns:  '{ results: { role: string, content: string, timestamp: number }[] }',
-      execute: async (args) => executeSearchChatHistory(env, ctx, String(args.query ?? '')),
-    },
-
-    getHistory: {
-      description:       historyDeclarations.find(d => d.name === 'getHistory')!.description,
-      geminiDeclaration: historyDeclarations.find(d => d.name === 'getHistory')!,
-      category: 'history',
-      tags:     ['history', 'recent', 'telegram', 'messages', 'context', 'autonomous', 'fetch'],
-      returns:  '{ results: { role: string, content: string, timestamp: number }[] }',
-      execute: async (args) => executeGetHistory(args, env),
-    },
-
-    // ── Timers ────────────────────────────────────────────────────────────────
+    // ── Async ─────────────────────────────────────────────────────────────────
 
     scheduleTimer: {
       description:       timerDeclarations.find(d => d.name === 'scheduleTimer')!.description,
@@ -401,27 +592,6 @@ export function buildToolRegistry(env: Env, ctx: AgentContext): Record<string, T
       execute: async (args) => executeSendTelegramMessage(args, env, ctx),
     },
 
-    // ── Memory ────────────────────────────────────────────────────────────────
-
-    readMemory: {
-      description:       dailyDeclarations.find(d => d.name === 'readMemory')!.description,
-      geminiDeclaration: dailyDeclarations.find(d => d.name === 'readMemory')!,
-      category: 'memory',
-      tags:     ['memory', 'today', 'log', 'recall', 'context', 'daily', 'journal', 'read', 'what happened'],
-      returns:  '{ date: string, path: string, exists: boolean, content: string | null }',
-      execute: async (args) => executeReadMemory(args, env, ctx),
-    },
-
-    writeMemory: {
-      description:       dailyDeclarations.find(d => d.name === 'writeMemory')!.description,
-      geminiDeclaration: dailyDeclarations.find(d => d.name === 'writeMemory')!,
-      category:  'memory',
-      tags:      ['memory', 'log', 'record', 'remember', 'note', 'observe', 'follow-up', 'write'],
-      returns:   '{ ok: boolean, date: string, path: string, entry: string }',
-      sideEffect: true,
-      execute: async (args) => executeWriteMemory(args, env, ctx),
-    },
-
     // ── Math ──────────────────────────────────────────────────────────────────
 
     newtonMath: {
@@ -472,7 +642,7 @@ export function buildToolRegistry(env: Env, ctx: AgentContext): Record<string, T
       execute: async (args, env) => executeWolframAlpha(args, env),
     },
 
-    // ── Research ──────────────────────────────────────────────────────────────
+    // ── Research (authoritative sources) ──────────────────────────────────────
 
     openAlex: {
       description:       researchDeclarations.find(d => d.name === 'openAlex')!.description,

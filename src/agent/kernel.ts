@@ -225,9 +225,10 @@ export function createKernel(config: KernelConfig, env: Env, ctx: AgentContext) 
     // Cap at FREE_DISCOVERY_ROUNDS to prevent runaway loops.
     // After the cap is exhausted, discovery rounds count as action rounds.
     const FREE_DISCOVERY_ROUNDS = 3;
-    let freeDiscoveryUsed   = 0;
-    let consecutiveDiscover = 0;
-    let actionRound         = 0;
+    let freeDiscoveryUsed    = 0;
+    let consecutiveDiscover  = 0;
+    let consecutiveIndexReads = 0;
+    let actionRound          = 0;
 
     while (actionRound < config.maxRounds) {
       if (isStopped()) { wsSend(ws, { type: 'done' }); return ''; }
@@ -272,7 +273,22 @@ export function createKernel(config: KernelConfig, env: Env, ctx: AgentContext) 
         })) ?? [];
 
         wsSend(ws, { type: 'toolResult', name, args, results: searchResults });
-        functionResponses.push({ functionResponse: { name, response: resultData } });
+
+        // ── Empty hot-tool hint ──────────────────────────────────────────────
+        // If a hot tool returned empty, inject a hint into the response so the
+        // model knows to escalate rather than conclude it doesn't know.
+        const isHotTool = config.hotTools.includes(name);
+        const isEmpty   = (
+          (Array.isArray((resultData as any)?.results) && (resultData as any).results.length === 0) ||
+          (Array.isArray((resultData as any)?.events)  && (resultData as any).events.length  === 0) ||
+          (resultData as any)?.exists  === false ||
+          (resultData as any)?.content === null
+        );
+        const response = (isHotTool && isEmpty)
+          ? { ...resultData, _hint: 'Empty result. Use discoverTools to check other categories before concluding.' }
+          : resultData;
+
+        functionResponses.push({ functionResponse: { name, response } });
       }
 
       if (functionResponses.length) {
@@ -280,33 +296,57 @@ export function createKernel(config: KernelConfig, env: Env, ctx: AgentContext) 
       }
 
       // ── Round accounting ───────────────────────────────────────────────────
-      // Pure-discovery rounds (every call was discoverTools) are free up to the
-      // FREE_DISCOVERY_ROUNDS cap. After that they count as normal action rounds
-      // so a stuck model cannot loop on discovery forever.
+      // Pure-discovery rounds are free up to FREE_DISCOVERY_ROUNDS.
+      // After that they count as action rounds so loops can't run forever.
+      //
+      // Nudge logic — two tiers:
+      //   2 consecutive index-only reads → redirect to Pass 2
+      //   3 total discovery rounds used  → guide toward using a tool
+      //
+      // "Index-only" means the discoverTools result contained __index but no
+      // individual tool entries — the model read the map but didn't drill down.
 
       const allDiscover = fnParts.every((p: any) => p.functionCall?.name === 'discoverTools');
 
+      // Detect whether this discover round was index-only (Pass 1 only)
+      const lastDiscoverResult = functionResponses.at(-1) as any;
+      const returnedIndexOnly  = allDiscover &&
+        lastDiscoverResult?.functionResponse?.response?.__index != null &&
+        Object.keys(lastDiscoverResult?.functionResponse?.response ?? {}).length === 1;
+
       if (allDiscover) {
         consecutiveDiscover++;
+        if (returnedIndexOnly) consecutiveIndexReads++;
+        else consecutiveIndexReads = 0;
 
         if (freeDiscoveryUsed < FREE_DISCOVERY_ROUNDS) {
           freeDiscoveryUsed++;
-          // Do NOT increment actionRound — this was a free pass.
         } else {
           actionRound++;
         }
 
-        // Three consecutive pure-discover rounds means the model is stuck — nudge it.
-        if (consecutiveDiscover >= 3) {
-          console.warn('[kernel] discoverTools loop detected — injecting nudge');
+        // After 2 consecutive index-only reads — redirect to Pass 2
+        if (consecutiveIndexReads >= 2) {
+          console.warn('[kernel] index-only loop — redirecting to Pass 2');
           (contents as any[]).push({
             role:  'user',
-            parts: [{ text: '[SYSTEM] You have called discoverTools 3 times in a row. Call executeCode now or respond directly.' }],
+            parts: [{ text: '[SYSTEM] Category identified. Now inspect the tools inside it.' }],
+          });
+          consecutiveIndexReads = 0;
+        }
+
+        // After 3 total free discovery rounds — guide toward using a tool
+        if (freeDiscoveryUsed >= FREE_DISCOVERY_ROUNDS && consecutiveDiscover > 0) {
+          console.warn('[kernel] discovery budget used — guiding to execution');
+          (contents as any[]).push({
+            role:  'user',
+            parts: [{ text: '[SYSTEM] You have what you need. Use the best matching tool now.' }],
           });
           consecutiveDiscover = 0;
         }
       } else {
-        consecutiveDiscover = 0;
+        consecutiveDiscover  = 0;
+        consecutiveIndexReads = 0;
         actionRound++;
       }
     }
