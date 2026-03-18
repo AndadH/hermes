@@ -8,9 +8,9 @@ import type { Env, AgentContext, SearchResult } from '../types';
 // ── KernelConfig ──────────────────────────────────────────────────────────────
 
 export interface KernelConfig {
-  hotTools:     string[];
-  maxRounds:    number;
-  buildPrompt:  (ctx: AgentContext) => string;
+  hotTools:    string[];
+  maxRounds:   number;
+  buildPrompt: (ctx: AgentContext) => string;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -25,8 +25,8 @@ function toStruct(value: unknown): Record<string, unknown> {
 // ── createKernel ──────────────────────────────────────────────────────────────
 
 export function createKernel(config: KernelConfig, env: Env, ctx: AgentContext) {
-  const registry     = buildToolRegistry(env, ctx);
-  const spec         = buildToolSpec(registry);
+  const registry = buildToolRegistry(env, ctx);
+  const spec     = buildToolSpec(registry);
 
   // Auto-generate a hot-tools reference from registry data — no manual prompt maintenance.
   // Format: "- toolName(requiredArgs): returns — description"
@@ -43,7 +43,7 @@ export function createKernel(config: KernelConfig, env: Env, ctx: AgentContext) 
 
   const systemPrompt = config.buildPrompt(ctx) + '\n\n' + hotToolsBlock;
 
-  // ── Sandbox executor ──────────────────────────────────────────────────────
+  // ── Sandbox executor ───────────────────────────────────────────────────────
   const executor = new DynamicWorkerExecutor({
     loader:  env.LOADER,
     timeout: 30_000,
@@ -71,7 +71,7 @@ export function createKernel(config: KernelConfig, env: Env, ctx: AgentContext) 
     spec: specFn,
   };
 
-  // ── Function declarations ─────────────────────────────────────────────────
+  // ── Function declarations ──────────────────────────────────────────────────
 
   const hotDeclarations = config.hotTools
     .map((name) => registry[name]?.geminiDeclaration)
@@ -82,29 +82,37 @@ export function createKernel(config: KernelConfig, env: Env, ctx: AgentContext) 
       name: 'discoverTools',
       description:
         'Explore available Hermes tools by writing JavaScript against the tool spec. ' +
-        'Call `await codemode.spec()` to get the full spec, then traverse it to find what you need. ' +
-        'Use this before executeCode whenever you need to find a tool, check argument shapes, ' +
-        'or read a usage guide.\n\n' +
-        'The spec is a `Record<string, ToolSpecEntry>` where each entry has:\n' +
+        'Discovery rounds are free — they do not count against your action budget.\n\n' +
+
+        'RECOMMENDED TWO-PASS PATTERN:\n' +
+        '  Pass 1 — read the category index to find the right neighborhood:\n' +
+        '    const spec = await codemode.spec();\n' +
+        '    return spec.__index;\n' +
+        '    // → { vault: { tools: [...] }, research: { tools: [...] }, math: { tools: [...] }, ... }\n\n' +
+        '  Pass 2 — read only the tools in the relevant category:\n' +
+        '    const spec = await codemode.spec();\n' +
+        '    return spec.__index.research.tools.map(name => ({ name, ...spec[name] }));\n\n' +
+
+        'Each tool entry has:\n' +
         '  description: string         — what the tool does\n' +
-        '  tags: string[]              — semantic keywords for filtering\n' +
-        '  args: Record<string, { type, required, description }>\n' +
-        '  returns: string             — return value shape\n' +
-        '  skill?: string             — usage guide (present on complex tools)\n' +
-        '  examples?: string[]        — codemode call examples\n\n' +
-        'Example traversals:\n' +
-        '  // Find all async/timer tools\n' +
+        '  category:    string         — which __index bucket it belongs to\n' +
+        '  tags:        string[]       — semantic keywords\n' +
+        '  args:        Record<string, { type, required, description }>\n' +
+        '  returns:     string         — return value shape\n' +
+        '  note?:       string         — when to prefer this tool over similar ones\n' +
+        '  skill?:      string         — usage guide (present on complex tools)\n' +
+        '  examples?:   string[]       — codemode call examples\n\n' +
+
+        'Other useful traversals:\n' +
+        '  // Check note fields to disambiguate between similar tools\n' +
         '  const spec = await codemode.spec();\n' +
-        '  return Object.entries(spec).filter(([_, t]) => t.tags.includes("async"));\n\n' +
+        '  return spec.__index.research.tools.map(n => ({ n, note: spec[n].note }));\n\n' +
         '  // Get the full entry for a specific tool including its skill guide\n' +
         '  const spec = await codemode.spec();\n' +
         '  return spec.scheduleTimer;\n\n' +
-        '  // Find tools that return notes content (useful for chaining)\n' +
-        '  const spec = await codemode.spec();\n' +
-        '  return Object.entries(spec).filter(([_, t]) => t.returns.includes("content"));\n\n' +
         '  // Check exact arg shapes before calling\n' +
         '  const spec = await codemode.spec();\n' +
-        '  return spec.registerCallback.args;',
+        '  return spec.newtonMath.args;',
       parameters: {
         type: 'OBJECT',
         properties: {
@@ -151,7 +159,7 @@ export function createKernel(config: KernelConfig, env: Env, ctx: AgentContext) 
     'executeCode',
   ]);
 
-  // ── Dispatch ──────────────────────────────────────────────────────────────
+  // ── Dispatch ───────────────────────────────────────────────────────────────
 
   async function dispatch(name: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
     if (!declaredTools.has(name)) {
@@ -173,7 +181,7 @@ export function createKernel(config: KernelConfig, env: Env, ctx: AgentContext) 
 
       const { result, error, logs } = await executor.execute(safe, execFns);
       if (error) {
-        // Extract codemode.toolName() calls and attach their spec entries
+        // Extract codemode.toolName() calls and attach their spec entries for debugging
         const calledTools = [...code.matchAll(/codemode\.(\w+)\s*\(/g)]
           .map(m => m[1])
           .filter(n => n !== 'spec');
@@ -205,7 +213,7 @@ export function createKernel(config: KernelConfig, env: Env, ctx: AgentContext) 
     return toStruct(result);
   }
 
-  // ── runLoop ───────────────────────────────────────────────────────────────
+  // ── runLoop ────────────────────────────────────────────────────────────────
 
   async function runLoop(ws: WebSocket, isStopped: () => boolean): Promise<string> {
     const contents: unknown[] = ctx.messages.map((m) => ({
@@ -213,12 +221,18 @@ export function createKernel(config: KernelConfig, env: Env, ctx: AgentContext) 
       parts: [{ text: m.content }],
     }));
 
+    // Discovery rounds are free — they don't burn the action budget.
+    // Cap at FREE_DISCOVERY_ROUNDS to prevent runaway loops.
+    // After the cap is exhausted, discovery rounds count as action rounds.
+    const FREE_DISCOVERY_ROUNDS = 3;
+    let freeDiscoveryUsed   = 0;
     let consecutiveDiscover = 0;
+    let actionRound         = 0;
 
-    for (let round = 0; round < config.maxRounds; round++) {
+    while (actionRound < config.maxRounds) {
       if (isStopped()) { wsSend(ws, { type: 'done' }); return ''; }
 
-      const data: any  = await geminiCall(env, systemPrompt, contents, functionDeclarations);
+      const data: any    = await geminiCall(env, systemPrompt, contents, functionDeclarations);
       const parts: any[] = data?.candidates?.[0]?.content?.parts ?? [];
       const fnParts      = parts.filter((p: any) => p.functionCall != null);
 
@@ -265,21 +279,35 @@ export function createKernel(config: KernelConfig, env: Env, ctx: AgentContext) 
         (contents as any[]).push({ role: 'user', parts: functionResponses });
       }
 
-      // Guard: if every call this round was discoverTools, increment counter.
-      // Two consecutive all-discover rounds means the model is stuck — nudge it.
+      // ── Round accounting ───────────────────────────────────────────────────
+      // Pure-discovery rounds (every call was discoverTools) are free up to the
+      // FREE_DISCOVERY_ROUNDS cap. After that they count as normal action rounds
+      // so a stuck model cannot loop on discovery forever.
+
       const allDiscover = fnParts.every((p: any) => p.functionCall?.name === 'discoverTools');
+
       if (allDiscover) {
         consecutiveDiscover++;
-        if (consecutiveDiscover >= 2) {
+
+        if (freeDiscoveryUsed < FREE_DISCOVERY_ROUNDS) {
+          freeDiscoveryUsed++;
+          // Do NOT increment actionRound — this was a free pass.
+        } else {
+          actionRound++;
+        }
+
+        // Three consecutive pure-discover rounds means the model is stuck — nudge it.
+        if (consecutiveDiscover >= 3) {
           console.warn('[kernel] discoverTools loop detected — injecting nudge');
           (contents as any[]).push({
             role:  'user',
-            parts: [{ text: '[SYSTEM] Call executeCode now or respond directly.' }],
+            parts: [{ text: '[SYSTEM] You have called discoverTools 3 times in a row. Call executeCode now or respond directly.' }],
           });
           consecutiveDiscover = 0;
         }
       } else {
         consecutiveDiscover = 0;
+        actionRound++;
       }
     }
 

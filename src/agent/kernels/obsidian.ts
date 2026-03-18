@@ -4,7 +4,7 @@ import type { KernelConfig } from '../kernel';
 import { basePersona, coreGuidelines } from './base';
 
 export const obsidianConfig: KernelConfig = {
-  hotTools: ['searchVault', 'readNote', 'webSearch', 'readMemory', 'writeMemory'],
+  hotTools: ['searchVault', 'readNote', 'readMemory', 'writeMemory'],
   maxRounds: 10,
 
   buildPrompt(ctx: AgentContext): string {

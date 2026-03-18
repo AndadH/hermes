@@ -47,20 +47,35 @@ import {
   executeWriteMemory,
 } from './daily';
 
-import { mathDeclarations, executeNewtonMath, executeWolframAlpha } from './math';
+import {
+  mathDeclarations,
+  executeNewtonMath,
+  executeWolframAlpha,
+} from './math';
+
+import {
+  researchDeclarations,
+  executeOpenAlex,
+  executeArxiv,
+  executeWikipedia,
+  executeFred,
+  executeWorldBank,
+} from './research';
 
 // ── ToolDef ───────────────────────────────────────────────────────────────────
 
 export interface ToolDef {
-  description: string;
+  description:       string;
   geminiDeclaration: Record<string, unknown>;
-  execute: (args: Record<string, unknown>, env: Env, ctx: AgentContext) => Promise<unknown>;
-  sideEffect?: boolean;
+  execute:           (args: Record<string, unknown>, env: Env, ctx: AgentContext) => Promise<unknown>;
+  sideEffect?:       boolean;
   // ── Spec fields — used by buildToolSpec / discoverTools ───────────────────
-  tags:      string[];   // semantic vocabulary for filtering, never sent to model raw
-  returns:   string;     // one-line return shape description, useful for chaining
-  skill?:    string;     // usage guide, only on complex tools
-  examples?: string[];   // 1-2 codemode call examples, only where non-obvious
+  category:  string;    // which __index bucket this belongs to
+  tags:      string[];  // semantic vocabulary for filtering
+  returns:   string;    // one-line return shape description
+  note?:     string;    // disambiguation hint vs similar tools
+  skill?:    string;    // usage guide, only on complex tools
+  examples?: string[];  // 1-2 codemode call examples, only where non-obvious
 }
 
 // ── Skill strings ─────────────────────────────────────────────────────────────
@@ -71,7 +86,7 @@ const TIMER_SKILL = [
   'Use when you need to evaluate the situation fresh at fire time.',
   'Write intent as a complete self-contained briefing — the future agent has no other context.',
   'Budget (depth/maxDepth) is forwarded automatically when rescheduling.',
-  'Default budget: maxDepth 5, maxDepth 5.',
+  'Default budget: maxDepth 5.',
   'Use scheduleCode instead when the action is deterministic.',
 ].join('\n');
 
@@ -98,18 +113,35 @@ const CALLBACK_SKILL = [
   'Write intent as a complete self-contained briefing — same rules as scheduleTimer.',
 ].join('\n');
 
+const NEWTON_SKILL = [
+  'newtonMath wraps the Newton micro-service for symbolic math.',
+  '',
+  'Operations: simplify | factor | derive | integrate | zeroes | tangent | area |',
+  '            cos | sin | tan | arccos | arcsin | arctan | abs | log',
+  '',
+  'Expression syntax:',
+  '  - Use ^ for exponents:               x^2+2x',
+  '  - Use (over) for fractions:          1(over)2',
+  '  - Tangent line at x=c:               c|f(x)  →  e.g. "2|x^3"',
+  '  - Area under curve from c to d:      c:d|f(x) → e.g. "2:4|x^3"',
+  '',
+  'Use executeCode for pure numeric calculations.',
+  'Use wolframAlpha for anything Newton cannot handle (ODEs, series, etc.).',
+].join('\n');
+
 // ── Registry ──────────────────────────────────────────────────────────────────
 
 export function buildToolRegistry(env: Env, ctx: AgentContext): Record<string, ToolDef> {
   return {
 
-    // ── Vault ────────────────────────────────────────────────────────────────
+    // ── Vault ─────────────────────────────────────────────────────────────────
 
     searchVault: {
-      description: vaultDeclarations.find(d => d.name === 'searchVault')!.description,
+      description:       vaultDeclarations.find(d => d.name === 'searchVault')!.description,
       geminiDeclaration: vaultDeclarations.find(d => d.name === 'searchVault')!,
-      tags:    ['vault', 'search', 'notes', 'obsidian', 'find', 'semantic', 'query', 'lookup'],
-      returns: '{ results: { filename: string, score: number, excerpt: string }[] }',
+      category: 'vault',
+      tags:     ['vault', 'search', 'notes', 'obsidian', 'find', 'semantic', 'query', 'lookup'],
+      returns:  '{ results: { filename: string, score: number, excerpt: string }[] }',
       execute: async (args) => {
         const results = await executeSearchVault(env, ctx, String(args.query ?? ''));
         return { results: results.map((r: SearchResult) => ({ filename: r.filename, score: r.score, excerpt: r.excerpt })) };
@@ -117,64 +149,74 @@ export function buildToolRegistry(env: Env, ctx: AgentContext): Record<string, T
     },
 
     listNotes: {
-      description: vaultDeclarations.find(d => d.name === 'listNotes')!.description,
+      description:       vaultDeclarations.find(d => d.name === 'listNotes')!.description,
       geminiDeclaration: vaultDeclarations.find(d => d.name === 'listNotes')!,
-      tags:    ['vault', 'list', 'notes', 'directory', 'folder', 'browse', 'all'],
-      returns: '{ notes: string[] }',
+      category: 'vault',
+      tags:     ['vault', 'list', 'notes', 'directory', 'folder', 'browse', 'all'],
+      returns:  '{ notes: string[] }',
       execute: async (args) => executeListNotes(env, ctx, args.folder ? String(args.folder) : undefined),
     },
 
     readNote: {
-      description: vaultDeclarations.find(d => d.name === 'readNote')!.description,
+      description:       vaultDeclarations.find(d => d.name === 'readNote')!.description,
       geminiDeclaration: vaultDeclarations.find(d => d.name === 'readNote')!,
-      tags:    ['vault', 'read', 'note', 'content', 'get', 'fetch', 'open'],
-      returns: '{ content: string } | { error: string }',
+      category: 'vault',
+      tags:     ['vault', 'read', 'note', 'content', 'get', 'fetch', 'open'],
+      returns:  '{ content: string } | { error: string }',
       execute: async (args) => executeReadNote(env, ctx, String(args.path ?? '')),
     },
 
     createNote: {
-      description: vaultDeclarations.find(d => d.name === 'createNote')!.description,
+      description:       vaultDeclarations.find(d => d.name === 'createNote')!.description,
       geminiDeclaration: vaultDeclarations.find(d => d.name === 'createNote')!,
-      tags:    ['vault', 'create', 'write', 'new', 'note', 'add'],
-      returns: '{ success: boolean } | { error: string }',
+      category:  'vault',
+      tags:      ['vault', 'create', 'write', 'new', 'note', 'add'],
+      returns:   '{ success: boolean } | { error: string }',
       sideEffect: true,
       execute: async (args) => executeCreateNote(env, ctx, String(args.path ?? ''), String(args.content ?? '')),
     },
 
     editNote: {
-      description: vaultDeclarations.find(d => d.name === 'editNote')!.description,
+      description:       vaultDeclarations.find(d => d.name === 'editNote')!.description,
       geminiDeclaration: vaultDeclarations.find(d => d.name === 'editNote')!,
-      tags:    ['vault', 'edit', 'update', 'overwrite', 'note', 'write', 'replace'],
-      returns: '{ success: boolean } | { error: string }',
+      category:  'vault',
+      tags:      ['vault', 'edit', 'update', 'overwrite', 'note', 'write', 'replace'],
+      returns:   '{ success: boolean } | { error: string }',
       sideEffect: true,
       execute: async (args) => executeEditNote(env, ctx, String(args.path ?? ''), String(args.content ?? '')),
     },
 
     patchNote: {
-      description: vaultDeclarations.find(d => d.name === 'patchNote')!.description,
+      description:       vaultDeclarations.find(d => d.name === 'patchNote')!.description,
       geminiDeclaration: vaultDeclarations.find(d => d.name === 'patchNote')!,
-      tags:    ['vault', 'patch', 'edit', 'surgical', 'find-replace', 'note', 'small-change'],
-      returns: '{ success: boolean } | { error: string }',
+      category:  'vault',
+      tags:      ['vault', 'patch', 'edit', 'surgical', 'find-replace', 'note', 'small-change'],
+      returns:   '{ success: boolean } | { error: string }',
       sideEffect: true,
       execute: async (args) => executePatchNote(env, ctx, String(args.path ?? ''), String(args.find ?? ''), String(args.replace ?? '')),
     },
 
     deleteNote: {
-      description: vaultDeclarations.find(d => d.name === 'deleteNote')!.description,
+      description:       vaultDeclarations.find(d => d.name === 'deleteNote')!.description,
       geminiDeclaration: vaultDeclarations.find(d => d.name === 'deleteNote')!,
-      tags:    ['vault', 'delete', 'remove', 'note', 'destroy'],
-      returns: '{ success: boolean } | { error: string }',
+      category:  'vault',
+      tags:      ['vault', 'delete', 'remove', 'note', 'destroy'],
+      returns:   '{ success: boolean } | { error: string }',
       sideEffect: true,
       execute: async (args) => executeDeleteNote(env, ctx, String(args.path ?? '')),
     },
 
-    // ── Web ──────────────────────────────────────────────────────────────────
+    // ── Web ───────────────────────────────────────────────────────────────────
 
     webSearch: {
-      description: webDeclarations.find(d => d.name === 'webSearch')!.description,
+      description:       webDeclarations.find(d => d.name === 'webSearch')!.description,
       geminiDeclaration: webDeclarations.find(d => d.name === 'webSearch')!,
-      tags:    ['web', 'search', 'internet', 'current', 'news', 'online', 'duckduckgo', 'external', 'lookup'],
-      returns: '{ results: { title: string, url: string, snippet: string }[] }',
+      category: 'web',
+      tags:     ['web', 'search', 'internet', 'current', 'news', 'online', 'external', 'lookup'],
+      returns:  '{ results: { title: string, url: string, snippet: string }[] }',
+      note:     'Use for current events, news, and general lookups with no dedicated tool. ' +
+                'Prefer research tools (openAlex, wikipedia, fred, worldBank) for structured data, ' +
+                'and math tools (newtonMath, wolframAlpha) for computation.',
       execute: async (args) => {
         const results = await executeWebSearch(env, String(args.query ?? ''));
         return { results };
@@ -182,20 +224,22 @@ export function buildToolRegistry(env: Env, ctx: AgentContext): Record<string, T
     },
 
     fetchPage: {
-      description: webDeclarations.find(d => d.name === 'fetchPage')!.description,
+      description:       webDeclarations.find(d => d.name === 'fetchPage')!.description,
       geminiDeclaration: webDeclarations.find(d => d.name === 'fetchPage')!,
-      tags:    ['web', 'fetch', 'read', 'url', 'page', 'scrape', 'content', 'full-text'],
-      returns: '{ content: string } | { error: string }',
+      category: 'web',
+      tags:     ['web', 'fetch', 'read', 'url', 'page', 'scrape', 'content', 'full-text'],
+      returns:  '{ content: string } | { error: string }',
       execute: async (args) => executeFetchPage(ctx, String(args.url ?? '')),
     },
 
-    // ── Calendar ─────────────────────────────────────────────────────────────
+    // ── Calendar ──────────────────────────────────────────────────────────────
 
     getCalendarEvents: {
-      description: calendarDeclarations.find(d => d.name === 'getCalendarEvents')!.description,
+      description:       calendarDeclarations.find(d => d.name === 'getCalendarEvents')!.description,
       geminiDeclaration: calendarDeclarations.find(d => d.name === 'getCalendarEvents')!,
-      tags:    ['calendar', 'events', 'schedule', 'availability', 'meetings', 'appointments', 'busy'],
-      returns: '{ events: { summary: string, start: string, end: string, description?: string }[] }',
+      category: 'calendar',
+      tags:     ['calendar', 'events', 'schedule', 'availability', 'meetings', 'appointments', 'busy'],
+      returns:  '{ events: { summary: string, start: string, end: string, description?: string }[] }',
       execute: async (args) => executeGetCalendarEvents(env, ctx, {
         timeMin: args.timeMin ? String(args.timeMin) : undefined,
         timeMax: args.timeMax ? String(args.timeMax) : undefined,
@@ -203,10 +247,11 @@ export function buildToolRegistry(env: Env, ctx: AgentContext): Record<string, T
     },
 
     createCalendarEvent: {
-      description: calendarDeclarations.find(d => d.name === 'createCalendarEvent')!.description,
+      description:       calendarDeclarations.find(d => d.name === 'createCalendarEvent')!.description,
       geminiDeclaration: calendarDeclarations.find(d => d.name === 'createCalendarEvent')!,
-      tags:    ['calendar', 'create', 'book', 'event', 'meeting', 'schedule', 'add', 'appointment'],
-      returns: '{ success: boolean, eventId?: string } | { error: string }',
+      category:  'calendar',
+      tags:      ['calendar', 'create', 'book', 'event', 'meeting', 'schedule', 'add', 'appointment'],
+      returns:   '{ success: boolean, eventId?: string } | { error: string }',
       sideEffect: true,
       execute: async (args) => {
         const summary = String(args.summary ?? args.title ?? args.name ?? args.subject ?? '').trim();
@@ -221,19 +266,21 @@ export function buildToolRegistry(env: Env, ctx: AgentContext): Record<string, T
     },
 
     deleteCalendarEvent: {
-      description: calendarDeclarations.find(d => d.name === 'deleteCalendarEvent')!.description,
+      description:       calendarDeclarations.find(d => d.name === 'deleteCalendarEvent')!.description,
       geminiDeclaration: calendarDeclarations.find(d => d.name === 'deleteCalendarEvent')!,
-      tags:    ['calendar', 'delete', 'remove', 'cancel', 'event'],
-      returns: '{ success: boolean, eventId?: string } | { error: string }',
+      category:  'calendar',
+      tags:      ['calendar', 'delete', 'remove', 'cancel', 'event'],
+      returns:   '{ success: boolean } | { error: string }',
       sideEffect: true,
       execute: async (args) => executeDeleteCalendarEvent(env, ctx, { eventId: String(args.eventId ?? '') }),
     },
 
     updateCalendarEvent: {
-      description: calendarDeclarations.find(d => d.name === 'updateCalendarEvent')!.description,
+      description:       calendarDeclarations.find(d => d.name === 'updateCalendarEvent')!.description,
       geminiDeclaration: calendarDeclarations.find(d => d.name === 'updateCalendarEvent')!,
-      tags:    ['calendar', 'update', 'edit', 'reschedule', 'change', 'event'],
-      returns: '{ success: boolean, eventId: string, updated: string[] } | { error: string }',
+      category:  'calendar',
+      tags:      ['calendar', 'update', 'edit', 'reschedule', 'change', 'event'],
+      returns:   '{ success: boolean, eventId: string, updated: string[] } | { error: string }',
       sideEffect: true,
       execute: async (args) => executeUpdateCalendarEvent(env, ctx, {
         eventId:     String(args.eventId ?? ''),
@@ -244,153 +291,154 @@ export function buildToolRegistry(env: Env, ctx: AgentContext): Record<string, T
       }),
     },
 
-    // ── History ──────────────────────────────────────────────────────────────
+    // ── History ───────────────────────────────────────────────────────────────
 
     searchChatHistory: {
-      description: historyDeclarations.find(d => d.name === 'searchChatHistory')!.description,
+      description:       historyDeclarations.find(d => d.name === 'searchChatHistory')!.description,
       geminiDeclaration: historyDeclarations.find(d => d.name === 'searchChatHistory')!,
-      tags:    ['history', 'chat', 'past', 'search', 'previous', 'conversation', 'messages', 'recall'],
-      returns: '{ results: { role: string, content: string, timestamp: number }[] }',
+      category: 'history',
+      tags:     ['history', 'chat', 'past', 'search', 'previous', 'conversation', 'messages', 'recall'],
+      returns:  '{ results: { role: string, content: string, timestamp: number }[] }',
       execute: async (args) => executeSearchChatHistory(env, ctx, String(args.query ?? '')),
     },
 
     getHistory: {
-      description: historyDeclarations.find(d => d.name === 'getHistory')!.description,
+      description:       historyDeclarations.find(d => d.name === 'getHistory')!.description,
       geminiDeclaration: historyDeclarations.find(d => d.name === 'getHistory')!,
-      tags:    ['history', 'context', 'recent', 'fetch', 'telegram', 'messages', 'load'],
-      returns: '{ source: string, count: number, messages: { role, content, timestamp }[] }',
+      category: 'history',
+      tags:     ['history', 'recent', 'telegram', 'messages', 'context', 'autonomous', 'fetch'],
+      returns:  '{ results: { role: string, content: string, timestamp: number }[] }',
       execute: async (args) => executeGetHistory(args, env),
     },
 
-    // ── Timers ───────────────────────────────────────────────────────────────
+    // ── Timers ────────────────────────────────────────────────────────────────
 
     scheduleTimer: {
-      description: timerDeclarations.find(d => d.name === 'scheduleTimer')!.description,
+      description:       timerDeclarations.find(d => d.name === 'scheduleTimer')!.description,
       geminiDeclaration: timerDeclarations.find(d => d.name === 'scheduleTimer')!,
-      tags:    ['async', 'timer', 'delay', 'later', 'remind', 'follow-up', 'check-in', 'wait', 'schedule', 'autonomous', 'agent'],
-      returns: '{ ok: boolean, id: string, firesIn: string, firesAt: string, budget: { depth, maxDepth, budget } }',
-      skill:   TIMER_SKILL,
+      category: 'async',
+      tags:     ['async', 'timer', 'schedule', 'delay', 'later', 'future', 'remind', 'autonomous'],
+      returns:  '{ ok: boolean, id: string, firesAt: string }',
+      skill:    TIMER_SKILL,
       examples: [
-        'await codemode.scheduleTimer({ minutes: 20, intent: "Ask over Telegram if the deploy issue is resolved. If yes, log it in Projects/Deploy.md. If not, check again in 30 min (up to 3 more times).", id: "deploy-followup" })',
+        'await codemode.scheduleTimer({ minutes: 60, intent: "Check if the deployment finished and notify Andrew." })',
+        'await codemode.scheduleTimer({ minutes: 1440, intent: "Follow up on EU-West outage mentioned earlier.", id: "eu-west-followup" })',
       ],
       execute: async (args) => executeScheduleTimer(args, env, ctx),
     },
 
     scheduleCode: {
-      description: timerDeclarations.find(d => d.name === 'scheduleCode')!.description,
+      description:       timerDeclarations.find(d => d.name === 'scheduleCode')!.description,
       geminiDeclaration: timerDeclarations.find(d => d.name === 'scheduleCode')!,
-      tags:    ['async', 'code', 'timer', 'delay', 'later', 'deterministic', 'schedule', 'no-llm', 'cheap', 'reminder'],
-      returns: '{ ok: boolean, id: string, label: string, firesIn: string, firesAt: string, budget: { depth, maxDepth, budget } }',
-      skill:   CODE_TIMER_SKILL,
+      category: 'async',
+      tags:     ['async', 'timer', 'schedule', 'code', 'deterministic', 'delay', 'later'],
+      returns:  '{ ok: boolean, id: string, firesAt: string }',
+      skill:    CODE_TIMER_SKILL,
       examples: [
-        'await codemode.scheduleCode({ minutes: 20, label: "remind Andrew", code: `await codemode.sendTelegramMessage({ text: "Reminder: follow up on the deploy" });` })',
-        'await codemode.scheduleCode({ minutes: 60, label: "log standup", code: `const note = await codemode.readNote({ path: "Daily/Standup.md" }); await codemode.editNote({ path: "Daily/Standup.md", content: note.content + "\\n- Checked in at " + new Date().toISOString() });` })',
+        `await codemode.scheduleCode({ minutes: 30, label: "Send standup reminder", code: \`await codemode.sendTelegramMessage({ text: "Standup in 5 minutes!" })\` })`,
       ],
       execute: async (args) => executeScheduleCode(args, env, ctx),
     },
 
     cancelTimer: {
-      description: timerDeclarations.find(d => d.name === 'cancelTimer')!.description,
+      description:       timerDeclarations.find(d => d.name === 'cancelTimer')!.description,
       geminiDeclaration: timerDeclarations.find(d => d.name === 'cancelTimer')!,
-      tags:    ['async', 'timer', 'cancel', 'stop', 'abort', 'remove'],
-      returns: '{ ok: boolean, id: string }',
+      category: 'async',
+      tags:     ['async', 'timer', 'cancel', 'stop', 'remove'],
+      returns:  '{ ok: boolean }',
       execute: async (args) => executeCancelTimer(args, env),
     },
 
     cancelCode: {
-      description: timerDeclarations.find(d => d.name === 'cancelCode')!.description,
+      description:       timerDeclarations.find(d => d.name === 'cancelCode')!.description,
       geminiDeclaration: timerDeclarations.find(d => d.name === 'cancelCode')!,
-      tags:    ['async', 'code', 'timer', 'cancel', 'stop', 'abort', 'remove'],
-      returns: '{ ok: boolean, id: string }',
+      category: 'async',
+      tags:     ['async', 'code-timer', 'cancel', 'stop', 'remove'],
+      returns:  '{ ok: boolean }',
       execute: async (args) => executeCancelCode(args, env),
     },
 
-    // ── Callbacks ────────────────────────────────────────────────────────────
-
     registerCallback: {
-      description: callbackDeclarations.find(d => d.name === 'registerCallback')!.description,
+      description:       callbackDeclarations.find(d => d.name === 'registerCallback')!.description,
       geminiDeclaration: callbackDeclarations.find(d => d.name === 'registerCallback')!,
-      tags:    ['async', 'callback', 'trigger', 'reaction', 'message', 'watch', 'telegram', 'event', 'on', 'listen', 'wait-for'],
-      returns: '{ ok: boolean, id: string, trigger, persistent: boolean, budget: { depth, maxDepth, budget } }',
-      skill:   CALLBACK_SKILL,
+      category: 'async',
+      tags:     ['async', 'callback', 'trigger', 'event', 'telegram', 'reaction', 'message', 'watch'],
+      returns:  '{ ok: boolean, id: string }',
+      skill:    CALLBACK_SKILL,
       examples: [
-        'await codemode.registerCallback({ triggerType: "telegram:message", pattern: "approved|lgtm|ship it", intent: "The user just approved something. Search the vault for the most recent pending decision, mark it approved, confirm to user.", id: "watch-approval" })',
+        'await codemode.registerCallback({ triggerType: "telegram:message", pattern: "approved|lgtm", intent: "User approved the PR. Merge it.", id: "watch-approval" })',
         'await codemode.registerCallback({ triggerType: "telegram:reaction", emoji: "👍", messageId: 42, intent: "User thumbs-upped my proposal. Create a calendar event for the kickoff meeting tomorrow at 10am.", id: "thumbsup-42" })',
       ],
       execute: async (args) => executeRegisterCallback(args, env, ctx),
     },
 
     deleteCallback: {
-      description: callbackDeclarations.find(d => d.name === 'deleteCallback')!.description,
+      description:       callbackDeclarations.find(d => d.name === 'deleteCallback')!.description,
       geminiDeclaration: callbackDeclarations.find(d => d.name === 'deleteCallback')!,
-      tags:    ['async', 'callback', 'delete', 'remove', 'cancel', 'unregister'],
-      returns: '{ ok: boolean, existed: boolean }',
+      category: 'async',
+      tags:     ['async', 'callback', 'delete', 'remove', 'cancel', 'unregister'],
+      returns:  '{ ok: boolean, existed: boolean }',
       execute: async (args) => executeDeleteCallback(args, env),
     },
 
     listCallbacks: {
-      description: callbackDeclarations.find(d => d.name === 'listCallbacks')!.description,
+      description:       callbackDeclarations.find(d => d.name === 'listCallbacks')!.description,
       geminiDeclaration: callbackDeclarations.find(d => d.name === 'listCallbacks')!,
-      tags:    ['async', 'callback', 'list', 'active', 'pending', 'registered', 'all'],
-      returns: '{ callbacks: { id, trigger, intent, persistent, depth, maxDepth }[] }',
+      category: 'async',
+      tags:     ['async', 'callback', 'list', 'active', 'pending', 'registered', 'all'],
+      returns:  '{ callbacks: { id, trigger, intent, persistent, depth, maxDepth }[] }',
       execute: async () => executeListCallbacks(env),
     },
 
-    // ── Telegram ─────────────────────────────────────────────────────────────
+    // ── Communication ─────────────────────────────────────────────────────────
 
     sendTelegramMessage: {
-      description: telegramDeclarations.find(d => d.name === 'sendTelegramMessage')!.description,
+      description:       telegramDeclarations.find(d => d.name === 'sendTelegramMessage')!.description,
       geminiDeclaration: telegramDeclarations.find(d => d.name === 'sendTelegramMessage')!,
-      tags:    ['telegram', 'message', 'send', 'notify', 'proactive', 'dm', 'chat', 'reply'],
-      returns: '{ ok: boolean, messageId: number } | { error: string }',
+      category: 'communication',
+      tags:     ['telegram', 'message', 'send', 'notify', 'proactive', 'dm', 'chat', 'reply'],
+      returns:  '{ ok: boolean, messageId: number } | { error: string }',
       execute: async (args) => executeSendTelegramMessage(args, env, ctx),
     },
 
     // ── Memory ────────────────────────────────────────────────────────────────
 
     readMemory: {
-      description: dailyDeclarations.find(d => d.name === 'readMemory')!.description,
+      description:       dailyDeclarations.find(d => d.name === 'readMemory')!.description,
       geminiDeclaration: dailyDeclarations.find(d => d.name === 'readMemory')!,
-      tags:    ['memory', 'today', 'log', 'recall', 'context', 'daily', 'journal', 'read', 'what happened'],
-      returns: '{ date: string, path: string, exists: boolean, content: string | null }',
+      category: 'memory',
+      tags:     ['memory', 'today', 'log', 'recall', 'context', 'daily', 'journal', 'read', 'what happened'],
+      returns:  '{ date: string, path: string, exists: boolean, content: string | null }',
       execute: async (args) => executeReadMemory(args, env, ctx),
     },
 
     writeMemory: {
-      description: dailyDeclarations.find(d => d.name === 'writeMemory')!.description,
+      description:       dailyDeclarations.find(d => d.name === 'writeMemory')!.description,
       geminiDeclaration: dailyDeclarations.find(d => d.name === 'writeMemory')!,
-      tags:    ['memory', 'log', 'record', 'remember', 'note', 'observe', 'follow-up', 'write'],
-      returns: '{ ok: boolean, date: string, path: string, entry: string }',
+      category:  'memory',
+      tags:      ['memory', 'log', 'record', 'remember', 'note', 'observe', 'follow-up', 'write'],
+      returns:   '{ ok: boolean, date: string, path: string, entry: string }',
       sideEffect: true,
       execute: async (args) => executeWriteMemory(args, env, ctx),
     },
-    // ── Math ──────────────────────────────────────────────────────────────────────
- 
+
+    // ── Math ──────────────────────────────────────────────────────────────────
+
     newtonMath: {
-      description: mathDeclarations.find(d => d.name === 'newtonMath')!.description,
+      description:       mathDeclarations.find(d => d.name === 'newtonMath')!.description,
       geminiDeclaration: mathDeclarations.find(d => d.name === 'newtonMath')!,
-      tags: [
+      category: 'math',
+      tags:     [
         'math', 'symbolic', 'algebra', 'calculus', 'derivative', 'integral',
         'factor', 'simplify', 'zeroes', 'roots', 'tangent', 'area', 'trig',
         'trigonometry', 'sin', 'cos', 'tan', 'arcsin', 'arccos', 'arctan',
         'log', 'abs', 'newton', 'symbolic-math',
       ],
-      returns: '{ operation: string, expression: string, result: string } | { error: string }',
-      skill: [
-        'newtonMath wraps the Newton micro-service for symbolic math.',
-        '',
-        'Operations: simplify | factor | derive | integrate | zeroes | tangent | area |',
-        '            cos | sin | tan | arccos | arcsin | arctan | abs | log',
-        '',
-        'Expression syntax:',
-        '  - Use ^ for exponents:               x^2+2x',
-        '  - Use (over) for fractions:          1(over)2',
-        '  - Tangent line at x=c:               c|f(x)  →  e.g. "2|x^3"',
-        '  - Area under curve from c to d:      c:d|f(x) → e.g. "2:4|x^3"',
-        '',
-        'Use executeCode for pure numeric calculations.',
-        'Use wolframAlpha for anything Newton cannot handle (ODEs, series, etc.).',
-      ].join('\n'),
+      returns:  '{ operation: string, expression: string, result: string } | { error: string }',
+      note:     'Use for symbolic math: derivatives, integrals, factoring, zeroes, trig. ' +
+                'Use wolframAlpha for anything Newton cannot handle (ODEs, series, eigenvalues). ' +
+                'Use executeCode directly for pure numeric calculations.',
+      skill:    NEWTON_SKILL,
       examples: [
         'await codemode.newtonMath({ operation: "derive", expression: "x^3+2x" })',
         'await codemode.newtonMath({ operation: "integrate", expression: "x^2+2x" })',
@@ -400,25 +448,138 @@ export function buildToolRegistry(env: Env, ctx: AgentContext): Record<string, T
       ],
       execute: async (args) => executeNewtonMath(args),
     },
- 
+
     wolframAlpha: {
-      description: mathDeclarations.find(d => d.name === 'wolframAlpha')!.description,
+      description:       mathDeclarations.find(d => d.name === 'wolframAlpha')!.description,
       geminiDeclaration: mathDeclarations.find(d => d.name === 'wolframAlpha')!,
-      tags: [
+      category: 'math',
+      tags:     [
         'math', 'advanced', 'wolfram', 'ode', 'differential-equation', 'series',
         'laplace', 'fourier', 'transform', 'number-theory', 'prime', 'matrix',
         'eigenvalue', 'statistics', 'distribution', 'unit-conversion', 'physics',
         'constants', 'science', 'natural-language', 'cas', 'computer-algebra',
       ],
-      returns: '{ query: string, answer: string } | { error: string }',
+      returns:  '{ query: string, pods: { title: string, text: string }[] } | { error: string }',
+      note:     'Use when newtonMath cannot handle the problem — ODEs, series expansions, ' +
+                'Laplace/Fourier transforms, eigenvalues, number theory. ' +
+                'Never use webSearch as a fallback for math.',
       examples: [
         'await codemode.wolframAlpha({ query: "integrate sin(x^2) dx from 0 to 1" })',
         'await codemode.wolframAlpha({ query: "eigenvalues of [[1,2],[3,4]]" })',
-        `await codemode.wolframAlpha({ query: "solve y'' + y = 0" })`,
+        `await codemode.wolframAlpha({ query: "solve y'' + 3y' + 2y = e^x" })`,
         'await codemode.wolframAlpha({ query: "1000 USD in JPY" })',
       ],
       execute: async (args, env) => executeWolframAlpha(args, env),
     },
+
+    // ── Research ──────────────────────────────────────────────────────────────
+
+    openAlex: {
+      description:       researchDeclarations.find(d => d.name === 'openAlex')!.description,
+      geminiDeclaration: researchDeclarations.find(d => d.name === 'openAlex')!,
+      category: 'research',
+      tags:     [
+        'research', 'academic', 'papers', 'literature', 'openalex',
+        'authors', 'concepts', 'institutions', 'citations', 'doi',
+        'pubmed', 'crossref', 'scholarly', 'science', 'publications',
+      ],
+      returns:  '{ total: number, results: { id, title, year, doi, open_access, url, authors, abstract }[] }',
+      note:     'Prefer over webSearch for academic literature — structured metadata, no hallucination risk. ' +
+                'Covers arXiv, PubMed, CrossRef. Use arxiv instead for preprint ID lookups or very fresh papers.',
+      examples: [
+        '// Pass 1 — fast scan, minimal tokens',
+        'await codemode.openAlex({ query: "transformer neural networks", limit: 10, brief: true })',
+        '// Pass 2 — full detail on the papers that look relevant',
+        'await codemode.openAlex({ query: "transformer neural networks", filter: "publication_year:>2023", limit: 3, brief: false, abstractLength: 800 })',
+        '// Author lookup',
+        'await codemode.openAlex({ entity: "authors", query: "Yann LeCun", brief: true })',
+        '// Recent open-access papers',
+        'await codemode.openAlex({ query: "CRISPR", filter: "publication_year:>2023,open_access.is_oa:true", limit: 5, brief: true })',
+      ],
+      execute: async (args) => executeOpenAlex(args),
+    },
+
+    arxiv: {
+      description:       researchDeclarations.find(d => d.name === 'arxiv')!.description,
+      geminiDeclaration: researchDeclarations.find(d => d.name === 'arxiv')!,
+      category: 'research',
+      tags:     [
+        'arxiv', 'preprint', 'paper-id', 'category', 'cs.LG', 'quant-ph',
+        'math', 'physics', 'fresh', 'recent', 'abstract', 'pdf',
+        'machine-learning', 'deep-learning', 'research',
+      ],
+      returns:  '{ total: number, results: { id, title, abstract, authors, published, url, pdf }[] }',
+      note:     'Use for arXiv ID lookups (e.g. "2301.07041"), category browsing (e.g. "cs.LG"), ' +
+                'or preprints too fresh for OpenAlex. Use openAlex for broad discovery queries.',
+      examples: [
+        '// Fetch a specific paper by ID',
+        'await codemode.arxiv({ id: "2301.07041" })',
+        '// Pass 1 — scan recent cs.LG papers, minimal tokens',
+        'await codemode.arxiv({ category: "cs.LG", limit: 10, brief: true })',
+        '// Pass 2 — full abstract on the ones that look relevant',
+        'await codemode.arxiv({ query: "mixture of experts", category: "cs.LG", limit: 3, brief: false, abstractLength: 800 })',
+      ],
+      execute: async (args) => executeArxiv(args),
+    },
+
+    wikipedia: {
+      description:       researchDeclarations.find(d => d.name === 'wikipedia')!.description,
+      geminiDeclaration: researchDeclarations.find(d => d.name === 'wikipedia')!,
+      category: 'research',
+      tags:     [
+        'wikipedia', 'wiki', 'encyclopedia', 'definition', 'summary', 'grounding',
+        'history', 'biography', 'concept', 'factual', 'reference', 'article',
+      ],
+      returns:  '{ title, summary, url, also_matched: string[] }',
+      note:     'Prefer over webSearch for grounding factual questions, definitions, and historical events ' +
+                'that have a well-established Wikipedia article.',
+      examples: [
+        'await codemode.wikipedia({ query: "Fourier transform" })',
+        'await codemode.wikipedia({ query: "Alan Turing" })',
+      ],
+      execute: async (args) => executeWikipedia(args),
+    },
+
+    fred: {
+      description:       researchDeclarations.find(d => d.name === 'fred')!.description,
+      geminiDeclaration: researchDeclarations.find(d => d.name === 'fred')!,
+      category: 'research',
+      tags:     [
+        'fred', 'economics', 'macro', 'inflation', 'gdp', 'unemployment',
+        'interest-rates', 'federal-reserve', 'cpi', 'time-series', 'data',
+        'us-economy', 'monetary-policy', 'trade', 'industrial-production',
+      ],
+      returns:  '{ series_id, title, units, frequency, updated, observations: { date, value }[] }',
+      note:     'Prefer over webSearch for any US macroeconomic time-series: CPI, GDP, unemployment, ' +
+                'interest rates, trade, industrial production.',
+      examples: [
+        'await codemode.fred({ series_id: "CPIAUCSL", observation_start: "2020-01-01" })',
+        'await codemode.fred({ series_id: "UNRATE", limit: 24 })',
+        'await codemode.fred({ series_id: "FEDFUNDS", observation_start: "2022-01-01", observation_end: "2024-12-31" })',
+      ],
+      execute: async (args, env) => executeFred(args, env),
+    },
+
+    worldBank: {
+      description:       researchDeclarations.find(d => d.name === 'worldBank')!.description,
+      geminiDeclaration: researchDeclarations.find(d => d.name === 'worldBank')!,
+      category: 'research',
+      tags:     [
+        'world-bank', 'global', 'development', 'gdp-per-capita', 'population',
+        'poverty', 'literacy', 'co2', 'energy', 'country', 'international',
+        'indicators', 'economics', 'statistics', 'climate',
+      ],
+      returns:  '{ indicator, indicator_name, total, results: { country, year, value }[] }',
+      note:     'Prefer over webSearch for global development data — GDP per capita, population, ' +
+                'CO2 emissions, literacy rates, poverty across countries.',
+      examples: [
+        'await codemode.worldBank({ indicator: "NY.GDP.PCAP.CD", country: "US", date_range: "2015:2023" })',
+        'await codemode.worldBank({ indicator: "SP.POP.TOTL", country: "all", date_range: "2023" })',
+        'await codemode.worldBank({ indicator: "EN.ATM.CO2E.PC", country: "CHN", date_range: "2010:2022" })',
+      ],
+      execute: async (args) => executeWorldBank(args),
+    },
+
   };
 }
 

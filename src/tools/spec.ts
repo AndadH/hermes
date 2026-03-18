@@ -1,19 +1,22 @@
 // src/tools/spec.ts
 //
-// Builds the rich tool spec object that is passed into both the discoverTools
-// and executeCode sandboxes via `await codemode.spec()`.
-//
-// The spec is a plain serializable Record — the model traverses it with
-// synchronous JS after a single `await codemode.spec()` call. No helper
-// functions needed; the data is rich enough that code traversal is natural.
+// Builds the rich tool spec object passed into discoverTools and executeCode
+// sandboxes via `await codemode.spec()`.
 //
 // Fields per tool:
-//   description — one-line summary (from ToolDef)
-//   tags        — semantic vocabulary for filtering (from ToolDef, manually curated)
-//   args        — derived from geminiDeclaration.parameters, no manual duplication
-//   returns     — one-line description of the return value shape (from ToolDef)
-//   skill?      — usage guide, only on complex tools (from ToolDef)
-//   examples?   — 1-2 codemode call examples, only where non-obvious (from ToolDef)
+//   description — one-line summary
+//   category    — which neighborhood this tool belongs to
+//   tags        — semantic vocabulary for filtering
+//   args        — derived from geminiDeclaration.parameters
+//   returns     — one-line return shape description
+//   note?       — disambiguation hint, e.g. "prefer this over webSearch for X"
+//   skill?      — usage guide, only on complex tools
+//   examples?   — 1-2 codemode call examples
+//
+// Special key:
+//   __index     — category map: { [category]: { description, tools: string[] } }
+//                 Read this first in discoverTools to find the right neighborhood,
+//                 then read only the tools in that bucket.
 
 import type { ToolDef } from './registry';
 
@@ -27,19 +30,43 @@ export interface ToolArgSpec {
 
 export interface ToolSpecEntry {
   description: string;
+  category:    string;
   tags:        string[];
   args:        Record<string, ToolArgSpec>;
   returns:     string;
+  note?:       string;
   skill?:      string;
   examples?:   string[];
 }
 
-export type HermesSpec = Record<string, ToolSpecEntry>;
+export interface CategoryEntry {
+  description: string;
+  tools:       string[];
+}
+
+export type HermesSpec = Record<string, ToolSpecEntry> & {
+  __index: Record<string, CategoryEntry>;
+};
+
+// ── Category descriptions — shown in __index ──────────────────────────────────
+
+const CATEGORY_DESCRIPTIONS: Record<string, string> = {
+  vault:         'Read and write Obsidian notes and vault files',
+  web:           'Live internet search and full page fetching',
+  research:      'Authoritative structured data: academic papers, encyclopedias, economic data',
+  math:          'Symbolic algebra, calculus, and advanced computer algebra system',
+  calendar:      'Google Calendar read and write',
+  async:         'Schedule future agent turns, code execution, and event-triggered callbacks',
+  memory:        'Daily journal log — read and write persistent observations',
+  communication: 'Send proactive Telegram messages',
+  history:       'Search across past conversation history',
+};
 
 // ── Builder ───────────────────────────────────────────────────────────────────
 
 export function buildToolSpec(registry: Record<string, ToolDef>): HermesSpec {
-  const spec: HermesSpec = {};
+  const spec: Record<string, ToolSpecEntry> = {};
+  const categoryMap: Record<string, string[]> = {};
 
   for (const [name, tool] of Object.entries(registry)) {
     const decl       = tool.geminiDeclaration as any;
@@ -55,15 +82,31 @@ export function buildToolSpec(registry: Record<string, ToolDef>): HermesSpec {
       };
     }
 
+    const category = tool.category ?? 'misc';
+
     spec[name] = {
       description: tool.description,
+      category,
       tags:        tool.tags ?? [],
       args,
       returns:     tool.returns ?? 'unknown',
+      ...(tool.note     ? { note:     tool.note     } : {}),
       ...(tool.skill    ? { skill:    tool.skill    } : {}),
       ...(tool.examples ? { examples: tool.examples } : {}),
     };
+
+    if (!categoryMap[category]) categoryMap[category] = [];
+    categoryMap[category].push(name);
   }
 
-  return spec;
+  // Build __index — category map with descriptions and tool lists
+  const index: Record<string, CategoryEntry> = {};
+  for (const [cat, tools] of Object.entries(categoryMap)) {
+    index[cat] = {
+      description: CATEGORY_DESCRIPTIONS[cat] ?? cat,
+      tools,
+    };
+  }
+
+  return { ...spec, __index: index } as HermesSpec;
 }
