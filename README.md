@@ -21,26 +21,26 @@ An autonomous executive intelligence built on Cloudflare Workers. Hermes runs as
 ```mermaid
 flowchart TB
     subgraph Clients["User Interfaces"]
-        TG[Telegram Bot]
-        OB[Obsidian Plugin]
+        TG["Telegram Bot"]
+        OB["Obsidian Plugin"]
     end
 
     subgraph Edge["Cloudflare Workers Edge (Hono)"]
-        Router{Router}
+        Router{"Router"}
         
         subgraph DO["Durable Objects"]
-            ChatDO[ChatDO<br/>Session & History]
-            TimerDO[TimerDO<br/>Alarms & Scheduling]
-            CallbackDO[CallbackDO<br/>Event Triggers]
+            ChatDO["ChatDO<br/>Session & History"]
+            TimerDO["TimerDO<br/>Alarms & Scheduling"]
+            CallbackDO["CallbackDO<br/>Event Triggers"]
         end
         
-        Agent[ Hermes Agent Kernel<br/>+ Codemode Sandbox]
+        Agent["Hermes Agent Kernel<br/>+ Codemode Sandbox"]
     end
 
     subgraph Data["Storage & AI"]
-        D1[(D1: hermes-db)<br/>Memory, History, Entities]
-        R2[(R2: vault)<br/>Markdown Notes]
-        AI[AutoRAG / Workers AI<br/>Semantic Search]
+        D1[("D1: hermes-db<br/>Memory, History, Entities")]
+        R2[("R2: vault<br/>Markdown Notes")]
+        AI["AutoRAG / Workers AI<br/>Semantic Search"]
     end
 
     TG -->|POST /webhook| Router
@@ -60,7 +60,7 @@ flowchart TB
     
     classDef cloudflare fill:#f38020,stroke:#d96b18,color:white;
     class D1,R2,AI cloudflare;
-
+```
 
 
     
