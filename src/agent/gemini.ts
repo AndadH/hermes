@@ -50,7 +50,7 @@ export function toolLabel(name: string, args: Record<string, unknown>): string {
       const unique = [...new Set(calls)];
       if (unique.length === 0) return 'Executing code…';
       if (unique.length === 1) return 'Running ' + unique[0] + '…';
-      const joined = unique.slice(0, 3).join(' + ') + (unique.length > 3 ? ' +' + (unique.length - 3) + ' more' : '');
+      const joined = unique.slice(0, 3).join(' + ') + (unique.length > 3 ? ' + ' + (unique.length - 3) + ' more' : '');
       return 'Running ' + joined + '…';
     }
 

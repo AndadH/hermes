@@ -45,6 +45,7 @@ new_classes = ["TimerDO", "CallbackDO"]
 
 [vars]
 "TELEGRAM_CHAT_ID" = "8169753369"
+"MODEL"            = "kimi"
 # ── Secrets (set with wrangler secret put) ────────────────────────────────────
 # API_SECRET              — shared bearer token for all endpoints
 # GOOGLE_AI_KEY           — Gemini API key

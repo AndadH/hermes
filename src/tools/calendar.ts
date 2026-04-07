@@ -110,7 +110,7 @@ async function getGoogleAuthToken(env: Env): Promise<string> {
   return ((await tokenRes.json()) as any).access_token;
 }
 
-function calendarUrl(env: Env, eventId?: string): string {
+export function calendarUrl(env: Env, eventId?: string): string {
   const base = 'https://www.googleapis.com/calendar/v3/calendars/' +
     encodeURIComponent(env.GOOGLE_CALENDAR_ID) + '/events';
   return eventId ? base + '/' + encodeURIComponent(eventId) : base;

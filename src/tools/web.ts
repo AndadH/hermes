@@ -99,8 +99,7 @@ const BLOCKED_HOSTNAMES = new Set([
   'localhost', '0.0.0.0',
 ]);
 
-// Rough check for private IP ranges in hostnames
-function isPrivateHost(hostname: string): boolean {
+export function isPrivateHost(hostname: string): boolean {
   if (BLOCKED_HOSTNAMES.has(hostname)) return true;
   // IPv4 private ranges
   if (/^127\./.test(hostname))          return true;
@@ -115,7 +114,7 @@ function isPrivateHost(hostname: string): boolean {
 // Sanitize fetched page content to reduce prompt injection risk.
 // Strips patterns commonly used to hijack LLM context.
 // This is not a complete defence — it raises the cost of injection.
-function sanitizePageContent(text: string): string {
+export function sanitizePageContent(text: string): string {
   return text
     // Remove XML-style instruction tags
     .replace(/<\s*(system|instructions?|prompt|context|assistant|user)\b[^>]*>[\s\S]*?<\/\s*\1\s*>/gi, '[removed]')

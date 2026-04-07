@@ -312,7 +312,7 @@ function timestamp(): string {
   });
 }
 
-function safeJson(value: unknown, fallback: string = '{}'): string {
+export function safeJson(value: unknown, fallback: string = '{}'): string {
   if (typeof value === 'string') {
     try { JSON.parse(value); return value; } catch {}
   }

@@ -234,7 +234,7 @@ export const researchDeclarations = [
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function defaultDateRange(yearsBack: number): { start: string; end: string } {
+export function defaultDateRange(yearsBack: number): { start: string; end: string } {
   const end   = new Date();
   const start = new Date();
   start.setFullYear(start.getFullYear() - yearsBack);
@@ -396,7 +396,7 @@ export async function executeArxiv(
 }
 
 // Minimal Atom feed parser — no external deps.
-function parseArxivXml(
+export function parseArxivXml(
   xml:            string,
   brief:          boolean,
   abstractLength: number,

@@ -18,28 +18,52 @@ An autonomous executive intelligence built on Cloudflare Workers. Hermes runs as
 
 ## Architecture
 
-```
-Cloudflare Worker (Hono router)
-├── /telegram/webhook          Telegram bot handler
-├── /ws/:sessionId             WebSocket chat (Obsidian plugin)
-├── /sync/*                    Vault sync API (manifest, upload, download, delete)
-├── /search                    Standalone semantic search (AutoRAG)
-└── /health                    Health check
+```mermaid
+flowchart TB
+    subgraph Clients["User Interfaces"]
+        TG[Telegram Bot]
+        OB[Obsidian Plugin]
+    end
 
-Durable Objects
-├── ChatDO                     Per-session WebSocket + conversation history
-├── TimerDO                    Scheduled intent/code timers (alarm API)
-└── CallbackDO                 Telegram event callbacks
+    subgraph Edge["Cloudflare Workers Edge (Hono)"]
+        Router{Router}
+        
+        subgraph DO["Durable Objects"]
+            ChatDO[ChatDO<br/>Session & History]
+            TimerDO[TimerDO<br/>Alarms & Scheduling]
+            CallbackDO[CallbackDO<br/>Event Triggers]
+        end
+        
+        Agent[ Hermes Agent Kernel<br/>+ Codemode Sandbox]
+    end
 
-Storage
-├── D1 (hermes-db)             Conversation history, vault manifest, entity store, timers, callbacks
-└── R2 (vault)                 Markdown notes (shared with Obsidian)
+    subgraph Data["Storage & AI"]
+        D1[(D1: hermes-db)<br/>Memory, History, Entities]
+        R2[(R2: vault)<br/>Markdown Notes]
+        AI[AutoRAG / Workers AI<br/>Semantic Search]
+    end
 
-AI
-└── Workers AI (AutoRAG)       Semantic search over vault notes
-```
+    TG -->|POST /webhook| Router
+    OB -->|WebSocket| Router
+    
+    Router --> ChatDO
+    Router --> TimerDO
+    Router --> CallbackDO
+    
+    ChatDO --> Agent
+    TimerDO -. Alarms .-> Agent
+    CallbackDO -. Events .-> Agent
 
----
+    Agent <--> D1
+    Agent <--> R2
+    Agent <--> AI
+    
+    classDef cloudflare fill:#f38020,stroke:#d96b18,color:white;
+    class D1,R2,AI cloudflare;
+
+
+
+    
 
 ## Prerequisites
 

@@ -36,13 +36,13 @@ function todayDate(): string {
   return y + '-' + m + '-' + d;
 }
 
-function parseDate(input: string): string | null {
+export function parseDate(input: string): string | null {
   // Accept YYYY-MM-DD only — keeps parsing unambiguous
   if (/^\d{4}-\d{2}-\d{2}$/.test(input.trim())) return input.trim();
   return null;
 }
 
-function notePath(date: string): string {
+export function notePath(date: string): string {
   return JOURNAL_FOLDER + '/' + date + '.md';
 }
 

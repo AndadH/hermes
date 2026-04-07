@@ -111,7 +111,7 @@ function resolveId(args: Record<string, unknown>): string {
 // 3 years in minutes — scheduling beyond this is almost certainly a model mistake
 const MAX_SCHEDULE_MINUTES = 3 * 365 * 24 * 60; // 1,576,800
 
-function resolveBudget(
+export function resolveBudget(
   args: Record<string, unknown>,
   ctx:  AgentContext,
 ): { depth: number; maxDepth: number; originTs: number } | { error: string } {
@@ -129,7 +129,7 @@ function getStub(env: Env, prefix: 'timer' | 'codetimer', id: string) {
   return env.TIMER_DO.get(env.TIMER_DO.idFromName(prefix + ':' + id));
 }
 
-function formatFiresAt(minutes: number): string {
+export function formatFiresAt(minutes: number): string {
   return new Date(Date.now() + minutes * 60_000).toLocaleString('en-US', {
     timeZone: 'America/Denver',
     hour: '2-digit', minute: '2-digit', month: 'short', day: 'numeric',
